@@ -66,7 +66,7 @@ Docker & Docker Compose
 Node.js (for AWS CDK)
 
 ### Installation
-```bash# 
+```bash
 # Clone repository
 git clone https://github.com/EdwLearn/aws-document-processing.git
 cd aws-document-processing
@@ -144,7 +144,8 @@ aws-document-processing/
  Production Deployment - Multi-environment setup
 
 🧪 Testing
-bash# Run all tests
+```bash
+Run all tests
 pytest
 
 # Run specific test file
@@ -165,6 +166,8 @@ Check Status
 bashcurl "http://localhost:8000/api/v1/documents/{document_id}/status"
 Get Results
 bashcurl "http://localhost:8000/api/v1/documents/{document_id}/results"
+```
+
 🏛️ Architecture Principles
 
 Serverless-First - Pay only for what you use
@@ -176,13 +179,13 @@ Infrastructure as Code - Reproducible deployments
 🤝 Contributing
 
 Fork the repository
+```
 Create a feature branch: git checkout -b feature/amazing-feature
 Commit changes: git commit -m 'Add amazing feature'
 Push to branch: git push origin feature/amazing-feature
 Open a Pull Request
+```
 
-📄 License
-This project is licensed under the MIT License - see the LICENSE file for details.
 🙏 Acknowledgments
 
 AWS for providing excellent cloud services
