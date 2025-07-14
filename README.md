@@ -56,14 +56,16 @@ pdf2image>=1.17.0       # PDF conversion
 PyMuPDF>=1.23.14       # PDF manipulation
 pillow>=10.2.0          # Image processing
 🚀 Quick Start
-Prerequisites
+```
+
+## Prerequisites
 
 Python 3.10+
 AWS CLI configured
 Docker & Docker Compose
 Node.js (for AWS CDK)
 
-Installation
+### Installation
 bash# Clone repository
 git clone https://github.com/EdwLearn/aws-document-processing.git
 cd aws-document-processing
@@ -89,7 +91,9 @@ API Docs: http://localhost:8000/docs
 Health Check: http://localhost:8000/health
 API Root: http://localhost:8000/
 
+
 📁 Project Structure
+```
 aws-document-processing/
 ├── 🏗️ infrastructure/
 │   ├── cdk/                    # AWS CDK stacks
@@ -111,7 +115,9 @@ aws-document-processing/
 ├── 📊 notebooks/               # Jupyter notebooks
 ├── 🔧 scripts/                 # Automation scripts
 └── 📚 docs/                    # Documentation
-🎯 Current Status
+```
+
+# 🎯 Current Status
 ✅ Completed Features
 
  Document Processor Lambda - PDF to images + Textract integration
