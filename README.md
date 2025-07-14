@@ -66,7 +66,8 @@ Docker & Docker Compose
 Node.js (for AWS CDK)
 
 ### Installation
-bash# Clone repository
+```bash# 
+# Clone repository
 git clone https://github.com/EdwLearn/aws-document-processing.git
 cd aws-document-processing
 
@@ -84,6 +85,7 @@ cp .env.example .env
 
 # Start API server
 uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000
+```
 API Documentation
 Once running, access:
 
