@@ -157,15 +157,22 @@ pytest --cov=src tests/
 
 # Integration tests (requires AWS credentials)
 pytest tests/integration/ -v
+```
+
 📊 API Usage Examples
-Upload Document
-bashcurl -X POST "http://localhost:8000/api/v1/documents/upload" \
+
+
+```bash
+# Upload Document
+curl -X POST "http://localhost:8000/api/v1/documents/upload" \
      -H "Content-Type: multipart/form-data" \
      -F "file=@document.pdf"
-Check Status
-bashcurl "http://localhost:8000/api/v1/documents/{document_id}/status"
-Get Results
-bashcurl "http://localhost:8000/api/v1/documents/{document_id}/results"
+     
+#Check Status
+curl "http://localhost:8000/api/v1/documents/{document_id}/status"
+
+# Get Results
+curl "http://localhost:8000/api/v1/documents/{document_id}/results"
 ```
 
 🏛️ Architecture Principles
