@@ -1,16 +1,14 @@
 """
-FastAPI application for document processing
+FastAPI application for invoice processing SaaS
 """
-from fastapi import FastAPI, HTTPException, UploadFile, File, Depends
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import uvicorn
-import os
-from typing import Dict, Any
 import logging
 
 from ..config.settings import settings
-from .routers import documents
+from .routers import invoices
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -18,8 +16,8 @@ logger = logging.getLogger(__name__)
 
 # Create FastAPI app
 app = FastAPI(
-    title="AWS Document Processing API",
-    description="Intelligent document processing using AWS services",
+    title="Invoice Processing SaaS API",
+    description="Intelligent invoice processing for Colombian retail businesses",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc"
@@ -35,16 +33,17 @@ app.add_middleware(
 )
 
 # Include routers
-app.include_router(documents.router, prefix="/api/v1/documents", tags=["documents"])
+app.include_router(invoices.router, prefix="/api/v1/invoices", tags=["invoices"])
 
 @app.get("/")
 async def root():
     """Health check endpoint"""
     return {
-        "message": "AWS Document Processing API",
+        "message": "Invoice Processing SaaS API",
         "version": "1.0.0",
         "status": "healthy",
-        "environment": settings.environment
+        "environment": settings.environment,
+        "target_market": "Colombian retail stores"
     }
 
 @app.get("/health")
@@ -52,9 +51,13 @@ async def health_check():
     """Detailed health check"""
     return {
         "status": "healthy",
-        "database": "connected",  #TODO: Add actual DB check
-        "aws": "configured",      #TODO: Add AWS connectivity check
-        "redis": "connected"      #TODO: Add Redis check
+        "database": "connected",  # TODO: Add actual DB check
+        "aws": "configured",      # TODO: Add AWS connectivity check
+        "services": {
+            "textract": "available",
+            "s3": "available", 
+            "invoice_processor": "running"
+        }
     }
 
 # Exception handlers
