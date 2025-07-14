@@ -1,50 +1,67 @@
-# Core dependencies
-setuptools>=65.0.0
-wheel>=0.38.0
+# AWS SDK
+boto3==1.34.34
+botocore==1.34.34
+aws-lambda-powertools==2.31.0
 
-# Numerical computing
-numpy==1.24.3
-pandas==2.0.3
+# Data Processing
+pandas==2.2.0
+numpy==1.26.3
+pillow==10.2.0
 
-# Computer Vision & Image Processing
-opencv-python==4.8.1.78
-pillow==10.0.1
-scikit-image==0.21.0
+# PDF Processing
+PyPDF2==3.0.1
+pdf2image==1.17.0
+PyMuPDF==1.23.14
 
-# Machine Learning
-scikit-learn==1.3.0
-scipy==1.11.1
+# Database - PostgreSQL
+sqlalchemy==2.0.25
+psycopg2-binary==2.9.9
+alembic==1.13.1
 
-# Deep Learning (versión actualizada)
-tensorflow==2.15.0
-keras==2.15.0
+# API Framework
+fastapi==0.109.0
+uvicorn==0.27.0
 
-# OCR
-pytesseract==0.3.10
-easyocr==1.7.0
-
-# Data Visualization
-matplotlib==3.7.2
-seaborn==0.12.2
-plotly==5.16.1
-
-# Development tools (versiones compatibles)
-typing_extensions==4.8.0
-ipython==8.14.0
-jupyter==1.0.0
-notebook==7.0.3
-ipykernel==6.25.0
-tqdm==4.66.1
-
-# MLOps
-mlflow==2.6.0
-dvc==3.15.0
+# Data Validation
+pydantic==2.5.3
+pydantic-settings==2.1.0
+marshmallow==3.20.2
 
 # Utilities
 python-dotenv==1.0.0
-pyyaml==6.0.1
+python-multipart==0.0.6
 requests==2.31.0
-click==8.1.7
+tenacity==8.2.3
+backoff==2.2.1
 
-# Data processing
-kaggle==1.5.16
+# Testing
+pytest==7.4.4
+pytest-asyncio==0.23.4
+pytest-cov==4.1.0
+moto==4.2.14
+
+# Development
+black==24.1.1
+flake8==7.0.0
+pre-commit==3.6.0
+
+# Documentation
+sphinx==7.2.6
+sphinx-rtd-theme==2.0.0
+
+# ML Libraries
+scikit-learn==1.4.0
+matplotlib==3.8.2
+seaborn==0.13.2
+plotly==5.18.0
+
+# Image Processing
+opencv-python==4.9.0.80
+reportlab==4.0.9
+jinja2==3.1.3
+
+# Redis (for caching)
+redis==5.0.1
+
+# Logging
+structlog==23.2.0
