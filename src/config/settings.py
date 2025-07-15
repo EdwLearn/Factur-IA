@@ -1,5 +1,5 @@
 """
-Configuration settings
+Configuration settings with PostgreSQL and S3 support
 """
 import os
 from typing import Optional
@@ -14,7 +14,7 @@ class Settings:
     
     # AWS Configuration
     aws_region: str = "us-east-1"
-    s3_document_bucket: str = "document-processing-uploads"
+    s3_document_bucket: str = "invoice-saas-textract-dev"
     
     # PostgreSQL Database Configuration
     db_host: str = "localhost"
@@ -40,6 +40,9 @@ class Settings:
         self.db_name = os.getenv("DB_NAME", self.db_name)
         self.db_user = os.getenv("DB_USER", self.db_user)
         self.db_password = os.getenv("DB_PASSWORD", self.db_password)
+        
+        # S3 configuration
+        self.s3_document_bucket = os.getenv("S3_DOCUMENT_BUCKET", self.s3_document_bucket)
     
     @property
     def database_url(self) -> str:

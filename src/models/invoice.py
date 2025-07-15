@@ -55,14 +55,24 @@ class InvoiceLineItem(BaseModel):
     unit_measure: Optional[str] = "UNIDAD"
     box_number: Optional[str] = None  # For organization
     
+    class Config:
+        json_encoders = {
+            Decimal: lambda v: float(v)
+        }
+    
 class InvoiceTotals(BaseModel):
     """Invoice totals and taxes"""
-    subtotal: Decimal = Field(..., description="Subtotal before taxes")
+    subtotal: Decimal = Field(default=Decimal("0"), description="Subtotal before taxes")
     iva_rate: Optional[Decimal] = Field(None, description="IVA rate %")
     iva_amount: Optional[Decimal] = Field(None, description="IVA amount")
     retenciones: Optional[Decimal] = Field(None, description="Retenciones amount")
-    total: Decimal = Field(..., description="Final total")
+    total: Decimal = Field(default=Decimal("0"), description="Final total")
     total_items: Optional[int] = Field(None, description="Total number of items")
+    
+    class Config:
+        json_encoders = {
+            Decimal: lambda v: float(v)
+        }
 
 class PaymentInfo(BaseModel):
     """Payment terms and info"""
@@ -70,6 +80,12 @@ class PaymentInfo(BaseModel):
     credit_days: Optional[int] = None
     due_date: Optional[date] = None
     discount_percentage: Optional[Decimal] = None
+    
+    class Config:
+        json_encoders = {
+            Decimal: lambda v: float(v),
+            date: lambda v: v.isoformat() if v else None
+        }
 
 # Main Invoice Model
 class InvoiceData(BaseModel):
@@ -92,7 +108,7 @@ class InvoiceData(BaseModel):
     line_items: List[InvoiceLineItem] = Field(default_factory=list)
     
     # Totals
-    totals: InvoiceTotals
+    totals: InvoiceTotals = Field(default_factory=InvoiceTotals)
     
     # Payment
     payment_info: PaymentInfo = Field(default_factory=PaymentInfo)
@@ -102,6 +118,13 @@ class InvoiceData(BaseModel):
     authorization: Optional[str] = None
     cufe: Optional[str] = None
     
+    class Config:
+        json_encoders = {
+            datetime: lambda v: v.isoformat() if v else None,
+            date: lambda v: v.isoformat() if v else None,
+            Decimal: lambda v: float(v)
+        }
+
 class ProcessedInvoice(BaseModel):
     """Processed invoice with metadata"""
     id: str = Field(..., description="Unique invoice ID")
@@ -118,7 +141,7 @@ class ProcessedInvoice(BaseModel):
     processing_time_seconds: Optional[float] = None
     error_message: Optional[str] = None
     
-    # Extracted data
+    # Extracted data (opcional - solo se incluye cuando se solicita)
     invoice_data: Optional[InvoiceData] = None
     
     # Storage info
@@ -127,8 +150,8 @@ class ProcessedInvoice(BaseModel):
     
     class Config:
         json_encoders = {
-            datetime: lambda v: v.isoformat(),
-            date: lambda v: v.isoformat(),
+            datetime: lambda v: v.isoformat() if v else None,
+            date: lambda v: v.isoformat() if v else None,
             Decimal: lambda v: float(v)
         }
 
@@ -145,6 +168,11 @@ class Tenant(BaseModel):
     max_invoices_month: int = 10
     created_at: datetime
     is_active: bool = True
+    
+    class Config:
+        json_encoders = {
+            datetime: lambda v: v.isoformat() if v else None
+        }
 
 class BillingRecord(BaseModel):
     """Billing record for invoice processing"""
@@ -156,3 +184,9 @@ class BillingRecord(BaseModel):
     invoice_type: InvoiceType
     pages_processed: int
     confidence_score: Optional[float] = None
+    
+    class Config:
+        json_encoders = {
+            datetime: lambda v: v.isoformat() if v else None,
+            Decimal: lambda v: float(v)
+        }

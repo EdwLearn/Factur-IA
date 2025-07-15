@@ -1,5 +1,5 @@
 """
-Invoice processing endpoints with multi-tenant support
+Invoice processing endpoints with multi-tenant support - FIXED
 """
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Header
 from fastapi.responses import JSONResponse
@@ -30,12 +30,7 @@ async def upload_invoice(
     file: UploadFile = File(..., description="PDF invoice to process"),
     tenant_id: str = Depends(get_tenant_id)
 ):
-    """
-    Upload a PDF invoice for processing
-    
-    Headers:
-        X-Tenant-ID: Your tenant identifier
-    """
+    """Upload a PDF invoice for processing"""
     try:
         # Validate file type
         if not file.filename.lower().endswith('.pdf'):
@@ -80,112 +75,6 @@ async def upload_invoice(
             detail=f"Failed to upload invoice: {str(e)}"
         )
 
-@router.get("/{invoice_id}/status", response_model=ProcessedInvoice)
-async def get_invoice_status(
-    invoice_id: str,
-    tenant_id: str = Depends(get_tenant_id)
-):
-    """Get processing status of an invoice"""
-    try:
-        invoice = await invoice_service.get_invoice_status(invoice_id, tenant_id)
-        
-        if not invoice:
-            raise HTTPException(
-                status_code=404,
-                detail="Invoice not found"
-            )
-        
-        return invoice
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting invoice status: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to get invoice status: {str(e)}"
-        )
-
-@router.get("/{invoice_id}/data", response_model=InvoiceData)
-async def get_invoice_data(
-    invoice_id: str,
-    tenant_id: str = Depends(get_tenant_id)
-):
-    """Get extracted invoice data"""
-    try:
-        invoice_data = await invoice_service.get_invoice_data(invoice_id, tenant_id)
-        
-        if not invoice_data:
-            raise HTTPException(
-                status_code=404,
-                detail="Invoice data not found or not yet processed"
-            )
-        
-        return invoice_data
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting invoice data: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to get invoice data: {str(e)}"
-        )
-
-@router.get("/", response_model=List[ProcessedInvoice])
-async def list_invoices(
-    tenant_id: str = Depends(get_tenant_id),
-    limit: int = 10,
-    offset: int = 0,
-    status: Optional[InvoiceStatus] = None
-):
-    """List invoices for the tenant"""
-    try:
-        invoices = await invoice_service.list_tenant_invoices(
-            tenant_id=tenant_id,
-            limit=limit,
-            offset=offset,
-            status=status
-        )
-        
-        return invoices
-        
-    except Exception as e:
-        logger.error(f"Error listing invoices: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to list invoices: {str(e)}"
-        )
-
-@router.delete("/{invoice_id}")
-async def delete_invoice(
-    invoice_id: str,
-    tenant_id: str = Depends(get_tenant_id)
-):
-    """Delete an invoice"""
-    try:
-        success = await invoice_service.delete_invoice(invoice_id, tenant_id)
-        
-        if not success:
-            raise HTTPException(
-                status_code=404,
-                detail="Invoice not found"
-            )
-        
-        return {
-            "message": "Invoice deleted successfully",
-            "invoice_id": invoice_id
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error deleting invoice: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to delete invoice: {str(e)}"
-        )
-
 @router.get("/analytics/summary")
 async def get_tenant_analytics(
     tenant_id: str = Depends(get_tenant_id)
@@ -221,3 +110,129 @@ async def get_tenant_analytics(
             status_code=500,
             detail=f"Failed to get analytics: {str(e)}"
         )
+
+@router.get("/", response_model=List[ProcessedInvoice])
+async def list_invoices(
+    tenant_id: str = Depends(get_tenant_id),
+    limit: int = 10,
+    offset: int = 0,
+    status: Optional[InvoiceStatus] = None
+):
+    """List invoices for the tenant"""
+    try:
+        invoices = await invoice_service.list_tenant_invoices(
+            tenant_id=tenant_id,
+            limit=limit,
+            offset=offset,
+            status=status
+        )
+        
+        return invoices
+        
+    except Exception as e:
+        logger.error(f"Error listing invoices: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to list invoices: {str(e)}"
+        )
+
+@router.get("/{invoice_id}/status", response_model=ProcessedInvoice)
+async def get_invoice_status(
+    invoice_id: str,
+    tenant_id: str = Depends(get_tenant_id)
+):
+    """Get processing status of an invoice"""
+    try:
+        invoice = await invoice_service.get_invoice_status(invoice_id, tenant_id)
+        
+        if not invoice:
+            raise HTTPException(
+                status_code=404,
+                detail="Invoice not found"
+            )
+        
+        return invoice
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting invoice status: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get invoice status: {str(e)}"
+        )
+
+@router.get("/{invoice_id}/data", response_model=InvoiceData)
+async def get_invoice_data(
+    invoice_id: str,
+    tenant_id: str = Depends(get_tenant_id)
+):
+    """Get extracted invoice data - FIXED to not require 'completed' status"""
+    try:
+        # First check if invoice exists
+        invoice_status = await invoice_service.get_invoice_status(invoice_id, tenant_id)
+        
+        if not invoice_status:
+            raise HTTPException(
+                status_code=404,
+                detail="Invoice not found"
+            )
+        
+        # Check if processing is complete (allow 'completed' or 'failed' with data)
+        if invoice_status.status not in [InvoiceStatus.COMPLETED, InvoiceStatus.FAILED]:
+            raise HTTPException(
+                status_code=409,  # Conflict
+                detail=f"Invoice is still {invoice_status.status}. Please wait for processing to complete."
+            )
+        
+        # Get the data (remove status filter)
+        invoice_data = await invoice_service.get_invoice_data(invoice_id, tenant_id)
+        
+        if not invoice_data:
+            raise HTTPException(
+                status_code=404,
+                detail="Invoice data not available - processing may have failed"
+            )
+        
+        return invoice_data
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting invoice data: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get invoice data: {str(e)}"
+        )
+
+
+@router.delete("/{invoice_id}")
+async def delete_invoice(
+    invoice_id: str,
+    tenant_id: str = Depends(get_tenant_id)
+):
+    """Delete an invoice"""
+    try:
+        success = await invoice_service.delete_invoice(invoice_id, tenant_id)
+        
+        if not success:
+            raise HTTPException(
+                status_code=404,
+                detail="Invoice not found"
+            )
+        
+        return {
+            "message": "Invoice deleted successfully",
+            "invoice_id": invoice_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting invoice: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete invoice: {str(e)}"
+        )
+
+

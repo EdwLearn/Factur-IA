@@ -1,18 +1,38 @@
 """
-FastAPI application for invoice processing SaaS
+FastAPI application for invoice processing SaaS with PostgreSQL
 """
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import uvicorn
 import logging
+from contextlib import asynccontextmanager
 
 from ..config.settings import settings
+from ..database.connection import init_database, close_database, create_tables, check_database_health
 from .routers import invoices
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan manager"""
+    # Startup
+    logger.info("🚀 Starting Invoice SaaS API...")
+    await init_database()
+    
+    # Create tables if needed (development)
+    if settings.environment == "development":
+        await create_tables()
+        logger.info("📊 Database tables ready")
+    
+    yield
+    
+    # Shutdown
+    logger.info("🛑 Shutting down...")
+    await close_database()
 
 # Create FastAPI app
 app = FastAPI(
@@ -20,7 +40,8 @@ app = FastAPI(
     description="Intelligent invoice processing for Colombian retail businesses",
     version="1.0.0",
     docs_url="/docs",
-    redoc_url="/redoc"
+    redoc_url="/redoc",
+    lifespan=lifespan
 )
 
 # Add CORS middleware
@@ -43,20 +64,24 @@ async def root():
         "version": "1.0.0",
         "status": "healthy",
         "environment": settings.environment,
-        "target_market": "Colombian retail stores"
+        "target_market": "Colombian retail stores",
+        "database": "PostgreSQL"
     }
 
 @app.get("/health")
 async def health_check():
     """Detailed health check"""
+    db_healthy = await check_database_health()
+    
     return {
-        "status": "healthy",
-        "database": "connected",  # TODO: Add actual DB check
-        "aws": "configured",      # TODO: Add AWS connectivity check
+        "status": "healthy" if db_healthy else "unhealthy",
+        "database": "connected" if db_healthy else "disconnected",
+        "aws": "configured",
         "services": {
             "textract": "available",
             "s3": "available", 
-            "invoice_processor": "running"
+            "invoice_processor": "running",
+            "postgresql": "connected" if db_healthy else "disconnected"
         }
     }
 

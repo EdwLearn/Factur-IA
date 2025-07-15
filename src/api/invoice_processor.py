@@ -318,6 +318,7 @@ class InvoiceProcessorService:
             }
         }
     
+    # ... (resto de métodos igual que antes)
     async def get_invoice_status(self, invoice_id: str, tenant_id: str) -> Optional[ProcessedInvoiceModel]:
         async with AsyncSessionFactory() as session:
             try:
@@ -341,20 +342,17 @@ class InvoiceProcessorService:
     async def get_invoice_data(self, invoice_id: str, tenant_id: str) -> Optional[InvoiceData]:
         async with AsyncSessionFactory() as session:
             try:
-                # REMOVIDO: filtro por status - ya se verifica en el endpoint
                 result = await session.execute(
                     select(ProcessedInvoice)
                     .options(selectinload(ProcessedInvoice.line_items))
                     .where(ProcessedInvoice.id == uuid.UUID(invoice_id))
                     .where(ProcessedInvoice.tenant_id == tenant_id)
+                    .where(ProcessedInvoice.status == "completed")
                 )
                 invoice = result.scalar_one_or_none()
                 
                 if not invoice:
-                    logger.error(f"Invoice not found in DB: {invoice_id}")
                     return None
-                
-                logger.info(f"Building InvoiceData for {invoice_id}")
                 
                 return InvoiceData(
                     invoice_number=invoice.invoice_number,
@@ -370,46 +368,39 @@ class InvoiceProcessorService:
                         phone=invoice.supplier_phone
                     ),
                     customer=CustomerInfo(
-                        customer_name=getattr(invoice, 'customer_name', None),
-                        customer_id=getattr(invoice, 'customer_id', None),
-                        address=getattr(invoice, 'customer_address', None),
-                        city=getattr(invoice, 'customer_city', None),
-                        department=getattr(invoice, 'customer_department', None),
-                        phone=getattr(invoice, 'customer_phone', None)
+                        customer_name=invoice.customer_name,
+                        customer_id=invoice.customer_id,
+                        address=invoice.customer_address,
+                        city=invoice.customer_city,
+                        department=invoice.customer_department,
+                        phone=invoice.customer_phone
                     ),
                     line_items=[
                         InvoiceLineItemModel(
-                            line_number=getattr(item, 'line_number', None),
                             product_code=item.product_code,
                             description=item.description,
                             reference=item.reference,
                             quantity=item.quantity,
                             unit_price=item.unit_price,
-                            subtotal=item.subtotal,
-                            unit_measure=getattr(item, 'unit_measure', None),
-                            box_number=getattr(item, 'box_number', None)
+                            subtotal=item.subtotal
                         )
-                        for item in (invoice.line_items or [])
+                        for item in invoice.line_items
                     ],
                     totals=InvoiceTotals(
-                        subtotal=getattr(invoice, 'subtotal', None) or Decimal("0"),
-                        iva_rate=getattr(invoice, 'iva_rate', None),
-                        iva_amount=getattr(invoice, 'iva_amount', None),
-                        retenciones=None,
-                        total=getattr(invoice, 'total_amount', None) or Decimal("0"),
-                        total_items=getattr(invoice, 'total_items', None) or len(invoice.line_items or [])
+                        subtotal=invoice.subtotal,
+                        iva_rate=invoice.iva_rate,
+                        iva_amount=invoice.iva_amount,
+                        total=invoice.total_amount,
+                        total_items=invoice.total_items
                     ),
                     payment_info=PaymentInfo(
-                        payment_method=getattr(invoice, 'payment_method', None),
-                        credit_days=getattr(invoice, 'credit_days', None)
+                        payment_method=invoice.payment_method,
+                        credit_days=invoice.credit_days
                     )
                 )
                 
             except Exception as e:
                 logger.error(f"Error getting invoice data: {str(e)}")
-                logger.error(f"Invoice ID: {invoice_id}, Tenant: {tenant_id}")
-                import traceback
-                logger.error(f"Traceback: {traceback.format_exc()}")
                 return None
     
     async def list_tenant_invoices(
