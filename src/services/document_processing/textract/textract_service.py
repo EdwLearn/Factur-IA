@@ -9,7 +9,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from decimal import Decimal
 from datetime import datetime, date
 
-from ..config.settings import settings
+from ....config.settings import settings
 
 logger = logging.getLogger(__name__)
 

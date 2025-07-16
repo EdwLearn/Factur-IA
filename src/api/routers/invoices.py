@@ -9,7 +9,7 @@ import logging
 from datetime import datetime
 
 from ...config.settings import settings
-from ...services.invoice_processor import InvoiceProcessorService
+from ...services.document_processing import InvoiceProcessorService
 from ...models.invoice import ProcessedInvoice, InvoiceData, InvoiceStatus
 
 logger = logging.getLogger(__name__)

@@ -10,15 +10,15 @@ from decimal import Decimal
 from sqlalchemy import select, update, delete, func
 from sqlalchemy.orm import selectinload
 
-from ..config.settings import settings
-from ..database.connection import AsyncSessionFactory
-from ..database.models import ProcessedInvoice, InvoiceLineItem, Tenant, BillingRecord
-from ..models.invoice import (
+from ...config.settings import settings
+from ...database.connection import AsyncSessionFactory
+from ...database.models import ProcessedInvoice, InvoiceLineItem, Tenant, BillingRecord
+from ...models.invoice import (
     InvoiceData, InvoiceStatus, InvoiceType,
     SupplierInfo, CustomerInfo, InvoiceLineItem as InvoiceLineItemModel, 
     InvoiceTotals, PaymentInfo, ProcessedInvoice as ProcessedInvoiceModel
 )
-from .textract_service import TextractService
+from .textract import TextractService
 
 logger = logging.getLogger(__name__)
 

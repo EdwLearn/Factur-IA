@@ -1,3 +1,3 @@
 """
-Services package
+Services module
 """

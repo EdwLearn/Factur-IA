@@ -54,6 +54,7 @@ scikit-learn==1.4.0
 matplotlib==3.8.2
 seaborn==0.13.2
 plotly==5.18.0
+img2pdf==0.5.1
 
 # Image Processing
 opencv-python==4.9.0.80
@@ -69,3 +70,6 @@ structlog==23.2.0
 # PostgreSQL Async Support
 asyncpg==0.29.0
 databases==0.8.0
+
+
+
