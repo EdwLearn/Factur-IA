@@ -56,15 +56,18 @@ pdf2image>=1.17.0       # PDF conversion
 PyMuPDF>=1.23.14       # PDF manipulation
 pillow>=10.2.0          # Image processing
 🚀 Quick Start
-Prerequisites
+```
+
+## Prerequisites
 
 Python 3.10+
 AWS CLI configured
 Docker & Docker Compose
 Node.js (for AWS CDK)
 
-Installation
-bash# Clone repository
+### Installation
+```bash
+# Clone repository
 git clone https://github.com/EdwLearn/aws-document-processing.git
 cd aws-document-processing
 
@@ -82,6 +85,7 @@ cp .env.example .env
 
 # Start API server
 uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000
+```
 API Documentation
 Once running, access:
 
@@ -89,7 +93,9 @@ API Docs: http://localhost:8000/docs
 Health Check: http://localhost:8000/health
 API Root: http://localhost:8000/
 
+
 📁 Project Structure
+```
 aws-document-processing/
 ├── 🏗️ infrastructure/
 │   ├── cdk/                    # AWS CDK stacks
@@ -111,7 +117,9 @@ aws-document-processing/
 ├── 📊 notebooks/               # Jupyter notebooks
 ├── 🔧 scripts/                 # Automation scripts
 └── 📚 docs/                    # Documentation
-🎯 Current Status
+```
+
+# 🎯 Current Status
 ✅ Completed Features
 
  Document Processor Lambda - PDF to images + Textract integration
@@ -136,7 +144,8 @@ aws-document-processing/
  Production Deployment - Multi-environment setup
 
 🧪 Testing
-bash# Run all tests
+```bash
+Run all tests
 pytest
 
 # Run specific test file
@@ -148,15 +157,24 @@ pytest --cov=src tests/
 
 # Integration tests (requires AWS credentials)
 pytest tests/integration/ -v
+```
+
 📊 API Usage Examples
-Upload Document
-bashcurl -X POST "http://localhost:8000/api/v1/documents/upload" \
+
+
+```bash
+# Upload Document
+curl -X POST "http://localhost:8000/api/v1/documents/upload" \
      -H "Content-Type: multipart/form-data" \
      -F "file=@document.pdf"
-Check Status
-bashcurl "http://localhost:8000/api/v1/documents/{document_id}/status"
-Get Results
-bashcurl "http://localhost:8000/api/v1/documents/{document_id}/results"
+     
+#Check Status
+curl "http://localhost:8000/api/v1/documents/{document_id}/status"
+
+# Get Results
+curl "http://localhost:8000/api/v1/documents/{document_id}/results"
+```
+
 🏛️ Architecture Principles
 
 Serverless-First - Pay only for what you use
@@ -168,13 +186,13 @@ Infrastructure as Code - Reproducible deployments
 🤝 Contributing
 
 Fork the repository
+```
 Create a feature branch: git checkout -b feature/amazing-feature
 Commit changes: git commit -m 'Add amazing feature'
 Push to branch: git push origin feature/amazing-feature
 Open a Pull Request
+```
 
-📄 License
-This project is licensed under the MIT License - see the LICENSE file for details.
 🙏 Acknowledgments
 
 AWS for providing excellent cloud services
