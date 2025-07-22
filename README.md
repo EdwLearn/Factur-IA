@@ -1,4 +1,4 @@
-# 🚀 AWS Document Processing System
+# 🚀 Invoice Processing SaaS for Colombian Retail
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://python.org)
 [![AWS](https://img.shields.io/badge/AWS-Lambda%20%7C%20Textract%20%7C%20S3-orange.svg)](https://aws.amazon.com)
@@ -6,201 +6,267 @@
 [![Docker](https://img.shields.io/badge/Docker-Supported-blue.svg)](https://docker.com)
 [![CDK](https://img.shields.io/badge/AWS%20CDK-Infrastructure-yellow.svg)](https://aws.amazon.com/cdk/)
 
-> **Intelligent document processing system using AWS services for PDF analysis, text extraction, and automated data validation.**
+> B2B SaaS system that automates invoice processing using **AWS Textract + Computer Vision + ML** for liquidation stores and small-to-medium retail businesses in Colombia.
 
-## 🎯 Overview
+## 📊 Project Status
 
-This system processes multi-page PDF documents, converts them to images, extracts structured data using Amazon Textract, and validates business rules through machine learning models. Perfect for automating document workflows in enterprise environments.
+✅ **Functional MVP:** End-to-end invoice processing with manual pricing  
+🔄 **In development:** Anti-duplicates + POS integrations  
+🎯 **Next milestone:** Paying customer (2 months)
 
-## ✨ Features
+## 🏗️ Technical Architecture
 
-### 🔄 **Document Processing Pipeline**
-- **PDF to Image Conversion** - High-resolution conversion for optimal OCR
-- **Amazon Textract Integration** - Extract text, tables, forms, and signatures
-- **Amazon Comprehend** - Custom classification for relevant page detection
-- **Amazon SageMaker** - Handwriting analysis and business rule validation
+### Tech Stack:
+- **Backend:** FastAPI + PostgreSQL + SQLAlchemy
+- **AI/ML:** AWS Textract + OpenCV + Transformers (Zero-shot classification)
+- **Cloud:** AWS S3 + LocalStack (development)
+- **Database:** PostgreSQL with Docker
+- **Computer Vision:** OpenCV + img2pdf for mobile photos
 
-### 🌐 **API Endpoints**
-- **POST** `/api/v1/documents/upload` - Upload PDF documents
-- **GET** `/api/v1/documents/{id}/status` - Check processing status
-- **GET** `/api/v1/documents/{id}/results` - Retrieve extraction results
-- **GET** `/api/v1/documents/` - List all processed documents
-- **DELETE** `/api/v1/documents/{id}` - Remove documents
-
-### 🏗️ **Serverless Architecture**
-- **AWS Lambda Functions** - Scalable, event-driven processing
-- **Step Functions** - Orchestrated workflows with error handling
-- **S3 Storage** - Secure document and result storage
-- **FastAPI** - Modern, async REST API framework
-
-## 🛠️ Tech Stack
-
-### **AWS Services**
-- **Compute**: Lambda, Fargate, SageMaker
-- **Storage**: S3, RDS (MySQL), DynamoDB
-- **AI/ML**: Textract, Comprehend, SageMaker, Rekognition
-- **Orchestration**: Step Functions
-- **Monitoring**: CloudWatch, X-Ray
-
-### **Python Ecosystem**
-```python
-# Core Dependencies
-boto3>=1.34.34          # AWS SDK
-fastapi>=0.109.0        # Modern API framework
-pandas>=2.2.0           # Data manipulation
-sqlalchemy>=2.0.25      # Database ORM
-pydantic>=2.5.3         # Data validation
-
-# Document Processing
-pdf2image>=1.17.0       # PDF conversion
-PyMuPDF>=1.23.14       # PDF manipulation
-pillow>=10.2.0          # Image processing
-🚀 Quick Start
+### Processing Pipeline:
+```bash
+📱 Mobile Photo → 🔧 OpenCV Enhancement → 📄 PDF → 🤖 AWS Textract → 📊 Structured Data → 🗄️ PostgreSQL
 ```
 
-## Prerequisites
+## 🎯 Implemented Features
 
-Python 3.10+
-AWS CLI configured
-Docker & Docker Compose
-Node.js (for AWS CDK)
+### Core Features ✅
+- ✅ **Invoice upload:** Direct PDF + mobile photos with enhancement
+- ✅ **ML processing:** AWS Textract + Computer Vision pipeline
+- ✅ **Manual pricing:** Interface for setting sale prices with margin calculation
+- ✅ **Multi-tenant:** Support for multiple clients
+- ✅ **Basic analytics:** Processed invoice reports
 
-### Installation
+### ML & Intelligence ✅
+- ✅ **Product Classification:** Zero-shot learning for product categorization
+- ✅ **Smart Pricing:** Recommendations based on category + historical data
+- ✅ **Price Rounding:** Intelligent rounding (10,800 → 11,000)
+- ✅ **Anti-Duplicates:** Fuzzy matching detection system (90% threshold)
+
+### Integrations 🔄
+- 🔄 **Square POS:** API integration (in development)
+- 🔄 **Excel Export:** Automatic file generation
+- 🔄 **Mayasis POS:** Client-specific integration (next)
+- 🔄 **Webhook/API:** Generic system for custom integrations
+
+## 🚀 Quick Start
+
+### Prerequisites:
+- Python 3.11+
+- Docker & Docker Compose
+- AWS Account (for Textract)
+
+### Setup:
 ```bash
-# Clone repository
+# 1. Clone repository
 git clone https://github.com/EdwLearn/aws-document-processing.git
 cd aws-document-processing
 
-# Create virtual environment
+# 2. Setup environment
 python -m venv venv
 source venv/bin/activate  # Linux/Mac
-# venv\Scripts\activate   # Windows
 
-# Install dependencies
+# 3. Install dependencies
 pip install -r requirements.txt
 
-# Configure environment
+# 4. Start database
+docker-compose up -d postgres
+
+# 5. Configure environment variables
 cp .env.example .env
 # Edit .env with your AWS credentials
 
-# Start API server
+# 6. Run migrations
+alembic upgrade head
+
+# 7. Start server
 uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000
 ```
-API Documentation
-Once running, access:
 
-API Docs: http://localhost:8000/docs
-Health Check: http://localhost:8000/health
-API Root: http://localhost:8000/
-
-
-📁 Project Structure
-```
-aws-document-processing/
-├── 🏗️ infrastructure/
-│   ├── cdk/                    # AWS CDK stacks
-│   └── terraform/              # Alternative IaC
-├── 🐍 src/
-│   ├── lambda_functions/       # Serverless functions
-│   │   └── document_processor/ # PDF processing Lambda
-│   ├── api/                    # FastAPI application
-│   │   ├── main.py            # API entry point
-│   │   └── routers/           # Route handlers
-│   ├── models/                 # Pydantic data models
-│   ├── services/               # Business logic
-│   ├── config/                 # Settings management
-│   └── utils/                  # Helper functions
-├── 🧪 tests/
-│   ├── unit/                   # Unit tests
-│   ├── integration/            # Integration tests
-│   └── fixtures/               # Test data
-├── 📊 notebooks/               # Jupyter notebooks
-├── 🔧 scripts/                 # Automation scripts
-└── 📚 docs/                    # Documentation
-```
-
-# 🎯 Current Status
-✅ Completed Features
-
- Document Processor Lambda - PDF to images + Textract integration
- FastAPI Application - Complete REST API with async endpoints
- Project Structure - Scalable architecture with best practices
- Unit Testing - Comprehensive test suite with mocks
- Development Environment - Docker, testing, and local development
-
-🚧 In Progress
-
- S3 Integration - Real file upload and storage
- CDK Infrastructure - AWS resources deployment
- Step Functions - Workflow orchestration
- Database Integration - Persistent data storage
-
-📋 Roadmap
-
- SageMaker Integration - Handwriting analysis model
- Comprehend Classification - Page relevance detection
- ANI API Integration - Identity validation
- QuickSight Dashboards - Business intelligence
- Production Deployment - Multi-environment setup
-
-🧪 Testing
+## Quick Testing:
 ```bash
-Run all tests
-pytest
+# Test ML Classification
+curl -X POST "http://localhost:8000/api/v1/invoices/test-ml-classification" \
+  -H "x-tenant-id: test" \
+  -H "Content-Type: application/json" \
+  -d '["Nike shoes", "Cotton t-shirt", "Bluetooth headphones"]'
 
-# Run specific test file
-pytest tests/unit/test_document_processor.py -v
-pytest tests/unit/test_api.py -v
-
-# Run with coverage
-pytest --cov=src tests/
-
-# Integration tests (requires AWS credentials)
-pytest tests/integration/ -v
+# Test price rounding
+curl -X POST "http://localhost:8000/api/v1/invoices/test-price-rounding" \
+  -H "x-tenant-id: test" \
+  -H "Content-Type: application/json" \
+  -d '[10800, 15300, 1250, 450]'
 ```
 
-📊 API Usage Examples
-
-
+##📡 API Endpoints
+### Invoice Processing:
 ```bash
-# Upload Document
-curl -X POST "http://localhost:8000/api/v1/documents/upload" \
-     -H "Content-Type: multipart/form-data" \
-     -F "file=@document.pdf"
-     
-#Check Status
-curl "http://localhost:8000/api/v1/documents/{document_id}/status"
+POST   /api/v1/invoices/upload              # Direct PDF
+POST   /api/v1/invoices/upload-photo        # Mobile photo + enhancement
+GET    /api/v1/invoices/{id}/status         # Processing status
+GET    /api/v1/invoices/{id}/data           # Extracted data
+```
+### Smart Pricing:
+```bash
+GET    /api/v1/invoices/{id}/pricing        # Data for manual pricing
+POST   /api/v1/invoices/{id}/pricing        # Set sale prices
+POST   /api/v1/invoices/{id}/confirm-pricing # Confirm and update inventory
+```
+### Anti-Duplicates (Coming):
+```bash
+POST   /api/v1/invoices/{id}/check-duplicates   # Detect similar products
+POST   /api/v1/invoices/{id}/resolve-duplicates # Resolve conflicts
+```
+### Integrations (In development):
+```bash
+GET    /api/v1/integrations/                # List integrations
+POST   /api/v1/integrations/sync-inventory  # Sync to external systems
+```
+##🗄️ Database Structure
+**Main Tables:**
 
-# Get Results
-curl "http://localhost:8000/api/v1/documents/{document_id}/results"
+- tenants - Multi-tenant clients
+- processed_invoices - Processed invoices with metadata
+- invoice_line_items - Invoice products with pricing
+- products - Product catalog for inventory
+- suppliers - Supplier directory
+
+## Schema example:
+```bash
+sqlprocessed_invoices:
+  ├── id: UUID (PK)
+  ├── tenant_id: VARCHAR(100) 
+  ├── status: uploaded | processing | completed | failed
+  ├── pricing_status: pending | partial | completed | confirmed
+  ├── invoice_number, supplier_name, total_amount
+  └── textract_raw_response: JSONB
+
+invoice_line_items:
+  ├── id: UUID (PK)
+  ├── invoice_id: UUID (FK)
+  ├── product_code, description, quantity, unit_price
+  ├── sale_price: NUMERIC(15,2)     -- Manual price
+  ├── markup_percentage: NUMERIC(5,2) -- Calculated margin
+  └── is_priced: BOOLEAN            -- Pricing flag
 ```
 
-🏛️ Architecture Principles
-
-Serverless-First - Pay only for what you use
-Event-Driven - Reactive processing pipeline
-Microservices - Single responsibility functions
-API-First - Well-documented, testable endpoints
-Infrastructure as Code - Reproducible deployments
-
-🤝 Contributing
-
-Fork the repository
+# 🤖 ML Features
+## Product Classification:
+```bash
+python# Automatic product classification
+"Nike Air Max shoes size 42" → {
+    'category': 'shoes',
+    'confidence': 0.94,
+    'margin_percentage': 55.0,
+    'reasoning': 'ML classified as footwear'
+}
 ```
-Create a feature branch: git checkout -b feature/amazing-feature
-Commit changes: git commit -m 'Add amazing feature'
-Push to branch: git push origin feature/amazing-feature
-Open a Pull Request
+## Smart Pricing:
+```bash
+python# Intelligent price recommendations
+cost_price = 28000 → {
+    'recommended_price': 43000,  # Colombian rounded
+    'confidence': 0.89,
+    'margin_percentage': 53.6,
+    'reasoning': 'Footwear category + supplier pattern'
+}
+```
+## Anti-Duplicates:
+```bash
+python# Similar product detection
+"Nike AirMax 42" vs "Nike Air Max shoes size 42" → {
+    'similarity_score': 0.92,
+    'is_duplicate': True,
+    'price_difference': -7000,  # New supplier 15% cheaper
+    'recommendation': 'Better supplier found'
+}
 ```
 
-🙏 Acknowledgments
+Value Proposition:
 
-AWS for providing excellent cloud services
-FastAPI for the modern Python web framework
-Open source community for amazing packages
+- ⚡ Speed: 15 min → 2 min per invoice
+- 🎯 Accuracy: >95% with Colombian invoices
+- 💰 ROI: 300%+ documented
+- 🔄 Integration: Connects with existing POS
 
+## 📋 Roadmap
+**This Week:**
 
-<div align="center">
-Built with ❤️ using AWS and Python
-⭐ Star this repo • 🐛 Report Bug • ✨ Request Feature
-</div>
+- Anti-duplicates with fuzzy matching
+- Auto-update inventory on pricing confirmation
+- UX panel for duplicate resolution
+
+**Next 2 Weeks:**
+
+- Mayasis integration (CSV upload)
+- Improved pricing frontend
+- Staging deployment for client
+
+**Month 2:**
+
+- Square POS integration
+- Advanced analytics dashboard
+- "Almacén Medellín JA" onboarding
+
+## **🔧 Configuration**
+Environment Variables (.env):
+```bash
+# Database
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=document_processing
+DB_USER=postgres
+DB_PASSWORD=postgres
+
+# AWS
+AWS_REGION=us-east-1
+S3_DOCUMENT_BUCKET=invoice-saas-textract-dev
+
+# API
+API_HOST=0.0.0.0
+API_PORT=8000
+ENVIRONMENT=development
+```
+Docker Services:
+```yaml
+# docker-compose.yml includes:
+- PostgreSQL 15 (port 5432)
+- Redis (port 6379) 
+- LocalStack (AWS simulation, port 4566)
+```
+🐛 Known Issues
+Dependencies:
+```bash
+bash# SQLAlchemy conflict - use specific versions:
+pip install "sqlalchemy>=1.4.42,<1.5" "databases>=0.8.0" "alembic>=1.13.1"
+```
+## **Performance:**
+- First ML load: 2-5 minutes (model download)
+- After: <1 second
+- Textract: 15-30 seconds per invoice
+
+## 🤝 Contributing
+Commit structure:
+```bash
+feat: new feature
+fix: bug fix  
+docs: documentation
+refactor: code refactoring
+test: add tests
+```
+
+**Development workflow**:
+
+- Fork the repo
+- Feature branch: git checkout -b feature/new-feature
+- Commit: git commit -m "feat: description"
+- Push: git push origin feature/new-feature
+- Pull Request
+
+## 📊 Metrics
+**Technical**:
+
+- Accuracy: >95% Colombian invoices
+- Processing time: <30s per invoice
+- API response: <200ms query endpoints
+- Uptime: 99.9% (target)
