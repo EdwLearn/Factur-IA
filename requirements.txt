@@ -73,3 +73,14 @@ databases==0.8.0
 
 
 
+transformers>=4.30.0
+torch>=2.0.0
+fuzzywuzzy>=0.18.0
+python-Levenshtein>=0.21.0
+sqlalchemy>=1.4.42,<2.1 
+databases>=0.8.0 
+alembic>=1.13.1
+transformers>=4.30.0
+torch>=2.0.0
+fuzzywuzzy>=0.18.0
+python-Levenshtein>=0.21.0

@@ -106,6 +106,8 @@ class ProcessedInvoice(Base):
     tenant = relationship("Tenant", back_populates="invoices")
     line_items = relationship("InvoiceLineItem", back_populates="invoice", cascade="all, delete-orphan")
     
+    pricing_status = Column(String(50), default="not_required", nullable=True)
+    
     # Indexes for performance
     __table_args__ = (
         Index('idx_tenant_status', 'tenant_id', 'status'),
@@ -135,6 +137,10 @@ class InvoiceLineItem(Base):
     
     # Relationships
     invoice = relationship("ProcessedInvoice", back_populates="line_items")
+    
+    sale_price = Column(Numeric(15, 2), nullable=True)
+    markup_percentage = Column(Numeric(5, 2), nullable=True)  
+    is_priced = Column(Boolean, default=False, nullable=False)
     
     # Indexes
     __table_args__ = (

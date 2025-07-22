@@ -158,8 +158,8 @@ class InvoiceProcessorService:
                 # Update invoice fields with SAFE extraction
                 invoice.invoice_number = self._safe_extract(extracted_data, "invoice_number")
                 invoice.invoice_type = "factura_venta"
-                invoice.issue_date = self._safe_extract(extracted_data, "issue_date")
-                invoice.due_date = self._safe_extract(extracted_data, "due_date")
+                invoice.issue_date = self._safe_date(extracted_data.get("issue_date"))
+                invoice.due_date = self._safe_date(extracted_data.get("due_date"))
                 
                 # Supplier info
                 supplier = extracted_data.get("supplier") or {}
@@ -478,3 +478,306 @@ class InvoiceProcessorService:
             s3_key=invoice.s3_key,
             textract_job_id=invoice.textract_job_id
         )
+
+    async def upload_and_process_photo(
+        self, 
+        tenant_id: str,
+        invoice_id: str, 
+        filename: str, 
+        photo_content: bytes
+    ) -> Dict[str, Any]:
+        """Upload photo, enhance it, convert to PDF, and process with Textract"""
+        from .computer_vision import DocumentImageEnhancer, ImageToPDFConverter
+        
+        async with AsyncSessionFactory() as session:
+            try:
+                # Verify/create tenant
+                tenant_result = await session.execute(
+                    select(Tenant).where(Tenant.tenant_id == tenant_id)
+                )
+                tenant = tenant_result.scalar_one_or_none()
+                
+                if not tenant:
+                    logger.info(f"Creating new tenant: {tenant_id}")
+                    tenant = Tenant(
+                        tenant_id=tenant_id,
+                        company_name=f"Company {tenant_id}",
+                        email=f"{tenant_id}@test.com",
+                        plan="freemium",
+                        max_invoices_month=10,
+                        invoices_processed_month=0
+                    )
+                    session.add(tenant)
+                    await session.flush()
+                
+                # Check monthly limits
+                if tenant.invoices_processed_month >= tenant.max_invoices_month:
+                    raise Exception(f"Monthly limit reached: {tenant.max_invoices_month} invoices")
+                
+                # Step 1: Enhance the photo
+                logger.info(f"Enhancing photo for invoice {invoice_id}")
+                enhancer = DocumentImageEnhancer()
+                enhanced_image_bytes = enhancer.enhance_invoice_photo(photo_content)
+                
+                # Step 2: Convert to PDF
+                logger.info(f"Converting enhanced image to PDF for invoice {invoice_id}")
+                pdf_converter = ImageToPDFConverter()
+                pdf_content = pdf_converter.convert_to_pdf(enhanced_image_bytes)
+                
+                # Validate PDF for Textract
+                if not pdf_converter.validate_pdf_for_textract(pdf_content):
+                    raise Exception("Generated PDF does not meet Textract requirements")
+                
+                # Step 3: Create invoice record
+                # Use PDF filename for consistency with existing pipeline
+                pdf_filename = f"{filename.rsplit('.', 1)[0]}_enhanced.pdf"
+                s3_key = f"invoices/{tenant_id}/{invoice_id}/{pdf_filename}"
+                
+                invoice = ProcessedInvoice(
+                    id=uuid.UUID(invoice_id),
+                    tenant_id=tenant_id,
+                    original_filename=pdf_filename,  # Store as PDF name
+                    file_size=len(pdf_content),
+                    s3_key=s3_key,
+                    status="uploaded",
+                    upload_timestamp=datetime.utcnow()
+                )
+                
+                session.add(invoice)
+                await session.commit()
+                
+                # Step 4: Upload PDF to S3 for Textract
+                try:
+                    self.textract_service.s3_client.put_object(
+                        Bucket=settings.s3_document_bucket,
+                        Key=s3_key,
+                        Body=pdf_content,
+                        ContentType='application/pdf'
+                    )
+                    logger.info(f"Enhanced PDF uploaded to S3: {s3_key}")
+                except Exception as e:
+                    logger.warning(f"S3 upload failed, using mock processing: {str(e)}")
+                
+                # Step 5: Start background processing with Textract
+                asyncio.create_task(self._process_invoice_with_textract(invoice_id, s3_key))
+                
+                logger.info(f"Photo processed and uploaded: {invoice_id} for tenant {tenant_id}")
+                
+                return {
+                    'invoice_id': invoice_id,
+                    'tenant_id': tenant_id,
+                    's3_key': s3_key,
+                    'status': 'uploaded',
+                    'processing_method': 'photo_enhancement'
+                }
+                
+            except Exception as e:
+                await session.rollback()
+                logger.error(f"Error processing photo: {str(e)}")
+                raise
+
+    async def get_pricing_data(self, invoice_id: str, tenant_id: str) -> Optional[Dict[str, Any]]:
+        """Get invoice data formatted for manual pricing - FIXED"""
+        async with AsyncSessionFactory() as session:
+            try:
+                # Get invoice first (without selectinload)
+                invoice_result = await session.execute(
+                    select(ProcessedInvoice)
+                    .where(ProcessedInvoice.id == uuid.UUID(invoice_id))
+                    .where(ProcessedInvoice.tenant_id == tenant_id)
+                )
+                invoice = invoice_result.scalar_one_or_none()
+                
+                if not invoice:
+                    logger.error(f"Invoice not found: {invoice_id}")
+                    return None
+                
+                logger.info(f"Found invoice: {invoice.invoice_number}")
+                
+                # Get line items in separate query
+                line_items_result = await session.execute(
+                    select(InvoiceLineItem)
+                    .where(InvoiceLineItem.invoice_id == uuid.UUID(invoice_id))
+                )
+                line_items = line_items_result.scalars().all()
+                
+                logger.info(f"Found {len(line_items)} line items")
+                
+                if not line_items:
+                    logger.warning(f"No line items found for invoice {invoice_id}")
+                    return None
+                
+                # Format line items for pricing
+                pricing_items = []
+                for item in line_items:
+                    pricing_items.append({
+                        "id": str(item.id),
+                        "product_code": item.product_code or "",
+                        "description": item.description or "",
+                        "quantity": float(item.quantity),
+                        "unit_price": float(item.unit_price),
+                        "subtotal": float(item.subtotal),
+                        "sale_price": float(item.sale_price) if hasattr(item, 'sale_price') and item.sale_price else None,
+                        "markup_percentage": float(item.markup_percentage) if hasattr(item, 'markup_percentage') and item.markup_percentage else None,
+                        "is_priced": getattr(item, 'is_priced', False)
+                    })
+                
+                # Calculate summary
+                total_cost = sum(float(item.subtotal) for item in line_items)
+                priced_items = len([item for item in pricing_items if item['is_priced']])
+                
+                result = {
+                    "invoice_id": invoice_id,
+                    "invoice_number": invoice.invoice_number,
+                    "supplier_name": invoice.supplier_name,
+                    "issue_date": invoice.issue_date.isoformat() if invoice.issue_date else None,
+                    "total_items": len(pricing_items),
+                    "priced_items": priced_items,
+                    "pending_items": len(pricing_items) - priced_items,
+                    "total_cost": total_cost,
+                    "line_items": pricing_items,
+                    "pricing_status": "pending" if priced_items == 0 else "partial" if priced_items < len(pricing_items) else "completed"
+                }
+                
+                logger.info(f"Returning pricing data with {len(pricing_items)} items")
+                return result
+                
+            except Exception as e:
+                logger.error(f"Error getting pricing data: {str(e)}")
+                import traceback
+                logger.error(f"Traceback: {traceback.format_exc()}")
+                return None
+
+    async def set_invoice_pricing(self, invoice_id: str, tenant_id: str, pricing_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Set manual pricing for line items"""
+        async with AsyncSessionFactory() as session:
+            try:
+                # Get line items to update
+                line_items_data = pricing_data.get('line_items', [])
+                
+                updated_items = 0
+                total_cost = Decimal('0')
+                total_sale_value = Decimal('0')
+                
+                for item_data in line_items_data:
+                    line_item_id = item_data.get('line_item_id')
+                    sale_price = item_data.get('sale_price')
+                    
+                    if not line_item_id or not sale_price:
+                        continue
+                    
+                    # Get the line item
+                    result = await session.execute(
+                        select(InvoiceLineItem)
+                        .where(InvoiceLineItem.id == uuid.UUID(line_item_id))
+                        .where(InvoiceLineItem.invoice_id == uuid.UUID(invoice_id))
+                    )
+                    line_item = result.scalar_one_or_none()
+                    
+                    if line_item:
+                        # Calculate markup percentage
+                        cost_per_unit = line_item.unit_price
+                        markup = ((Decimal(str(sale_price)) - cost_per_unit) / cost_per_unit) * 100
+                        
+                        # Update line item
+                        await session.execute(
+                            update(InvoiceLineItem)
+                            .where(InvoiceLineItem.id == line_item.id)
+                            .values(
+                                sale_price=Decimal(str(sale_price)),
+                                markup_percentage=markup,
+                                is_priced=True
+                            )
+                        )
+                        
+                        # Calculate totals
+                        item_cost = line_item.subtotal
+                        item_sale_value = Decimal(str(sale_price)) * line_item.quantity
+                        
+                        total_cost += item_cost
+                        total_sale_value += item_sale_value
+                        updated_items += 1
+                
+                # Update invoice pricing status
+                await session.execute(
+                    update(ProcessedInvoice)
+                    .where(ProcessedInvoice.id == uuid.UUID(invoice_id))
+                    .where(ProcessedInvoice.tenant_id == tenant_id)
+                    .values(pricing_status="partial")  # Will be updated to "completed" when all items are priced
+                )
+                
+                await session.commit()
+                
+                # Calculate summary
+                total_profit = total_sale_value - total_cost
+                average_markup = ((total_sale_value - total_cost) / total_cost * 100) if total_cost > 0 else Decimal('0')
+                
+                return {
+                    "updated_items": updated_items,
+                    "total_cost": float(total_cost),
+                    "total_sale_value": float(total_sale_value),
+                    "total_profit": float(total_profit),
+                    "average_markup": float(average_markup)
+                }
+                
+            except Exception as e:
+                await session.rollback()
+                logger.error(f"Error setting pricing: {str(e)}")
+                raise
+
+    async def confirm_invoice_pricing(self, invoice_id: str, tenant_id: str) -> Dict[str, Any]:
+        """Confirm pricing and prepare for inventory update"""
+        async with AsyncSessionFactory() as session:
+            try:
+                # Check if all items are priced
+                result = await session.execute(
+                    select(InvoiceLineItem)
+                    .where(InvoiceLineItem.invoice_id == uuid.UUID(invoice_id))
+                )
+                line_items = result.scalars().all()
+                
+                unpriced_items = [item for item in line_items if not getattr(item, 'is_priced', False)]
+                
+                if unpriced_items:
+                    raise Exception(f"Cannot confirm pricing: {len(unpriced_items)} items still need pricing")
+                
+                # Update invoice status
+                await session.execute(
+                    update(ProcessedInvoice)
+                    .where(ProcessedInvoice.id == uuid.UUID(invoice_id))
+                    .where(ProcessedInvoice.tenant_id == tenant_id)
+                    .values(pricing_status="confirmed")
+                )
+                
+                await session.commit()
+                
+                # TODO: Here we'll add inventory update logic in next step
+                
+                return {
+                    "status": "confirmed",
+                    "ready_for_inventory": True,
+                    "total_items": len(line_items)
+                }
+                
+            except Exception as e:
+                await session.rollback()
+                logger.error(f"Error confirming pricing: {str(e)}")
+                raise
+
+    def _safe_date(self, value) -> Optional[date]:
+        """Safely convert to date object"""
+        if value is None:
+            return None
+        try:
+            if isinstance(value, date):
+                return value
+            if isinstance(value, str):
+                # Try different date formats
+                for fmt in ['%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y']:
+                    try:
+                        return datetime.strptime(value, fmt).date()
+                    except ValueError:
+                        continue
+            return None
+        except Exception:
+            return None
