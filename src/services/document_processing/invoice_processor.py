@@ -200,16 +200,26 @@ class InvoiceProcessorService:
                         try:
                             line_item = InvoiceLineItem(
                                 invoice_id=invoice.id,
+                                line_number=self._safe_int(item_data.get("item_number")),
                                 product_code=self._safe_extract(item_data, "product_code"),
                                 description=self._safe_extract(item_data, "description"),
                                 reference=self._safe_extract(item_data, "reference"),
                                 quantity=self._safe_decimal(item_data.get("quantity")),
                                 unit_price=self._safe_decimal(item_data.get("unit_price")),
-                                subtotal=self._safe_decimal(item_data.get("subtotal"))
+                                subtotal=self._safe_decimal(item_data.get("subtotal")),
+                                unit_measure=self._safe_extract(item_data, "unit_measure"), 
+                                
+                                # ✨ NEW: Enhanced fields for unit conversions
+                                original_quantity=self._safe_decimal(item_data.get("original_quantity")),
+                                original_unit=self._safe_extract(item_data, "original_unit"),
+                                unit_multiplier=self._safe_decimal(item_data.get("unit_multiplier")),
+                                item_number=self._safe_int(item_data.get("item_number")),
+                                enhancement_applied=self._safe_extract(item_data, "_enhancement_applied")
                             )
                             session.add(line_item)
                         except Exception as e:
                             logger.warning(f"Error creating line item: {str(e)}")
+                            logger.warning(f"Item data: {item_data}")
                 
                 # Update tenant invoice count
                 await session.execute(
@@ -779,5 +789,14 @@ class InvoiceProcessorService:
                     except ValueError:
                         continue
             return None
+        except Exception:
+            return None
+        
+    def _safe_int(self, value) -> Optional[int]:
+        """Safely convert to int"""
+        if value is None:
+            return None
+        try:
+            return int(value)
         except Exception:
             return None
