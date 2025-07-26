@@ -717,6 +717,20 @@ async def test_ml_classification(
         "ml_status": "active" if classifier.classifier else "fallback_mode"
     }
 
+@router.get("/mock-casoli")
+async def get_mock_casoli_data(tenant_id: str = Depends(get_tenant_id)):
+    """Mock data de factura Casoli para testing rápido"""
+    from ...services.document_processing.textract.textract_service import TextractService
+    
+    textract = TextractService()
+    mock_items = textract._get_casoli_mock_items()
+    
+    return {
+        "message": "Mock Casoli data",
+        "line_items": mock_items,
+        "enhancer_test": "ready"
+    }
+
 # ---------------
 
 @router.get("/test")
