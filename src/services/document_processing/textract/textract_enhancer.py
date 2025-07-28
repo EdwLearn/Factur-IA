@@ -95,95 +95,92 @@ class TextractDataEnhancer:
         Example: "1 049 (DAMA)" → item=1, ref="049 (DAMA)"
         """
         product_code = item.get('product_code', '').strip()
+        description = item.get('description', '').strip()
         
         if not product_code:
             return item
         
         # Pattern 1: Number + space + rest (most common)
-        # "1 049 (DAMA)" → groups: ("1", "049 (DAMA)")
-        pattern1 = r'^(\d+)\s+(.+)$'
-        match1 = re.match(pattern1, product_code)
-        
-        if match1:
-            extracted_item_num = match1.group(1)
-            clean_ref = match1.group(2)
-            
-            # Validate: extracted number should match line position
-            if int(extracted_item_num) == line_number:
-                item['item_number'] = int(extracted_item_num)
-                item['product_code'] = clean_ref
-                item['_enhancement_applied'] = 'item_ref_separated'
-                
-                logger.debug(f"✅ Separated: '{product_code}' → item={extracted_item_num}, ref='{clean_ref}'")
-                return item
-        
-        # Pattern 2: Item number at start with different separators
-        # "1. ABC123" or "1) XYZ-789"
-        pattern2 = r'^(\d+)[\.\)\s]+(.+)$'
-        match2 = re.match(pattern2, product_code)
-        
-        if match2:
-            extracted_item_num = match2.group(1)
-            clean_ref = match2.group(2)
-            
-            if int(extracted_item_num) == line_number:
-                item['item_number'] = int(extracted_item_num)
-                item['product_code'] = clean_ref
-                item['_enhancement_applied'] = 'item_ref_separated_alt'
-                
-                logger.debug(f"✅ Separated (alt): '{product_code}' → item={extracted_item_num}, ref='{clean_ref}'")
-                return item
-        
-        # If no pattern matches, keep original but set item number
-        if 'item_number' not in item:
-            item['item_number'] = line_number
-        
-        return item
+        pattern_complex = r'^(\d+)\s+([A-Z0-9\-]+)\s+'
+        match_complex = re.match(pattern_complex, product_code)
     
-    def _convert_units_to_pieces(self, item: Dict) -> Dict:
-        """
-        Convert units to individual pieces
-        Example: 1 DOC → 12 PCS
-        """
-        quantity = item.get('quantity')
-        unit = item.get('unit_measure', '').strip().upper()
+        cleaned_description = re.sub(r'^\d+\s+', '', description)
+        item['description'] = cleaned_description
         
-        if not quantity or not unit:
+        if not product_code:
+            item['item_number'] = line_number
             return item
         
+        pattern = r'^(\d+)\s+(.+)$'
+        match = re.match(pattern, product_code)
+    
+        if match and int(match.group(1)) == line_number:
+            item['item_number'] = int(match.group(1))
+            item['product_code'] = match.group(2)
+            item['_enhancement_applied'] = 'item_ref_separated_and_cleaned'
+        
+            logger.debug(f"✅ Cleaned: '{product_code}' → item={match.group(1)}, code='{match.group(2)}', desc='{cleaned_description}'")
+        else:
+            # If not match, only item number
+            item['item_number'] = line_number
+    
+        return item
+        
+    
+    def _convert_units_to_pieces(self, item: Dict) -> Dict:
+        """Convert units to individual pieces with debugging"""
+        quantity = item.get('quantity')
+        unit = item.get('unit_measure', '').strip().upper()
+    
+        # ✅ AGREGAR DEBUGGING INICIAL
+        logger.info(f"🔧 Processing item: {item.get('product_code')} | {quantity} {unit}")
+    
+        if not quantity or not unit:
+            logger.warning(f"⚠️ Missing data: qty={quantity}, unit={unit}")
+            return item
+    
         # Store original values
         item['original_quantity'] = quantity
         item['original_unit'] = unit
-        
+    
         # Get conversion multiplier
         multiplier = self.unit_conversions.get(unit, 1)
+        logger.info(f"📊 Unit '{unit}' → multiplier: {multiplier}")
         
-        if multiplier != 1:
+        
+        if multiplier == 0:
+            item['unit_multiplier'] = 1
+            item['_enhancement_applied'] = f'unit_kept_original_{unit}'
+            logger.info(f"🔒 Kept original: {quantity} {unit} (no conversion needed)")
+    
+    
+        if multiplier > 1:
             try:
                 original_qty = Decimal(str(quantity))
                 converted_quantity = original_qty * Decimal(str(multiplier))
-                
+
                 # Update item
                 item['quantity'] = converted_quantity
-                item['unit_measure'] = 'PCS'  # Convert to pieces
+                item['unit_measure'] = 'PCS'
                 item['unit_multiplier'] = multiplier
                 item['_enhancement_applied'] = f'unit_converted_{unit}_to_PCS'
-                
-                # Update subtotal if we have unit price
+            
+                # Update unit price
                 if item.get('unit_price'):
-                    # Unit price should now be per piece
                     original_unit_price = Decimal(str(item['unit_price']))
                     new_unit_price = original_unit_price / Decimal(str(multiplier))
                     item['unit_price'] = new_unit_price
-                
-                logger.info(f"🔄 Unit conversion: {original_qty} {unit} → {converted_quantity} PCS (x{multiplier})")
-                
+            
+                logger.info(f"🔄 SUCCESS: {original_qty} {unit} → {converted_quantity} PCS (x{multiplier})")
+            
             except Exception as e:
-                logger.warning(f"Error converting units for {item.get('product_code')}: {str(e)}")
+                logger.error(f"❌ Conversion failed for {item.get('product_code')}: {str(e)}")
                 item['unit_multiplier'] = 1
         else:
             item['unit_multiplier'] = 1
-        
+            item['_enhancement_applied'] = f'unit_already_individual_{unit}'
+            logger.info(f"ℹ️ No conversion needed for unit '{unit}'")
+    
         return item
     
     def _clean_line_item_fields(self, item: Dict) -> Dict:

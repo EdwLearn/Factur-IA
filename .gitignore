@@ -1,8 +1,3 @@
-# ================================
-# VEHICLE DOCUMENT CLASSIFICATION
-# Professional .gitignore
-# ================================
-
 # Python
 __pycache__/
 *.py[cod]
@@ -31,37 +26,44 @@ venv/
 env/
 ENV/
 .venv/
+.env
 
-# Jupyter Notebook
-.ipynb_checkpoints
-*.ipynb_checkpoints/
-
-# TensorFlow/Keras
-*.h5
-*.hdf5
-saved_model/
-
-# Data (managed by DVC)
-/data/processed/car_plates/images_rois/
-/data/raw/
-*.jpg
-*.jpeg
-*.png
-*.tiff
-
-# Models (managed by DVC)
-/models/*.h5
-
-# Logs and temp files
-*.log
-.DS_Store
+# IDE
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
 
-# OS generated files
+# OS
+.DS_Store
 Thumbs.db
 
-# DVC
-/models/*.h5.dvc
-/data/processed/car_plates/images_rois.dvc
-/models/cpu_model.h5
+# Logs
+*.log
+logs/
+
+# Database
+*.db
+*.sqlite3
+
+# AWS Credentials
+.aws/
+credentials
+
+# Local development
+.env.local
+.env.development
+.env.test
+
+# Testing
+.coverage
+.pytest_cache/
+htmlcov/
+
+# Docker
+.dockerignore
+
+# Temporary files
+tmp/
+temp/

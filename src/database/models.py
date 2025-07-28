@@ -142,6 +142,12 @@ class InvoiceLineItem(Base):
     markup_percentage = Column(Numeric(5, 2), nullable=True)  
     is_priced = Column(Boolean, default=False, nullable=False)
     
+    original_quantity = Column(Numeric(15, 4), nullable=True)
+    original_unit = Column(String(20), nullable=True)
+    unit_multiplier = Column(Numeric(10, 2), nullable=True, default=1)
+    item_number = Column(Integer, nullable=True)
+    enhancement_applied = Column(String(100), nullable=True)
+    
     # Indexes
     __table_args__ = (
         Index('idx_product_code_invoice', 'product_code', 'invoice_id'),
