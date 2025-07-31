@@ -28,6 +28,8 @@
 📱 Mobile Photo → 🔧 OpenCV Enhancement → 📄 PDF → 🤖 AWS Textract → 📊 Structured Data → 🗄️ PostgreSQL
 ```
 
+![Demo](./demo-ezgif.com-video-to-gif-converter.gif)
+
 <video width="600" controls>
   <source src="/demo.mp4" type="video/mp4">
 </video>
