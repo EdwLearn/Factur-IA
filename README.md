@@ -28,11 +28,18 @@
 📱 Mobile Photo → 🔧 OpenCV Enhancement → 📄 PDF → 🤖 AWS Textract → 📊 Structured Data → 🗄️ PostgreSQL
 ```
 
+
 ## 🎥 Demo
 
-[![See Demo](./demo-ezgif.com-video-to-gif-converter.gif)](https://www.loom.com/share/50c6c3d7085e43c5916b248c4d485463?sid=c7f60638-c20e-4239-847c-f5a5014ad227)
+<div align="center">
+  <a href="https://www.loom.com/share/50c6c3d7085e43c5916b248c4d485463?sid=c7f60638-c20e-4239-847c-f5a5014ad227">
+    <img src="https://via.placeholder.com/600x300/ff5757/ffffff?text=🎬+Ver+Demo" alt="Ver Demo">
+  </a>
+  <br>
+  <em>*click on GIF to see complete video*</em>
+</div>
 
-*click on GIF to see complete video*
+
 
 
 ## 🎯 Implemented Features
