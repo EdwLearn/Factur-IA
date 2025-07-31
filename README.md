@@ -29,14 +29,15 @@
 ```
 
 
+
 ## 🎥 Demo
 
 <div align="center">
   <a href="https://www.loom.com/share/50c6c3d7085e43c5916b248c4d485463?sid=c7f60638-c20e-4239-847c-f5a5014ad227">
-    [![See Demo](./demo-ezgif.com-video-to-gif-converter.gif)](https://www.loom.com/share/50c6c3d7085e43c5916b248c4d485463?sid=c7f60638-c20e-4239-847c-f5a5014ad227)
+    <img src="./demo-ezgif.com-video-to-gif-converter.gif" alt="Ver Demo Completo">
   </a>
   <br>
-  <em>*click on GIF to see complete video*</em>
+  <strong>Click on GIF to see complete video</strong>
 </div>
 
 
