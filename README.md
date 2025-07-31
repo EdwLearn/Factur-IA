@@ -28,11 +28,13 @@
 📱 Mobile Photo → 🔧 OpenCV Enhancement → 📄 PDF → 🤖 AWS Textract → 📊 Structured Data → 🗄️ PostgreSQL
 ```
 
-![Demo](./demo-ezgif.com-video-to-gif-converter.gif)
+## 🎥 Demo
 
-<video width="600" controls>
-  <source src="/demo.mp4" type="video/mp4">
-</video>
+<div align="center">
+  <img src="./demo-ezgif.com-video-to-gif-converter.gif" alt="Demo de la aplicación" width="800">
+  <br>
+  <em>Demostración completa de las funcionalidades</em>
+</div>
 
 ## 🎯 Implemented Features
 
