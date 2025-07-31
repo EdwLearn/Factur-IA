@@ -28,11 +28,15 @@
 📱 Mobile Photo → 🔧 OpenCV Enhancement → 📄 PDF → 🤖 AWS Textract → 📊 Structured Data → 🗄️ PostgreSQL
 ```
 
-## 🎥 Demo
+## 🎥 Demostración
 
-[![Ver Demo](https://cdn.loom.com/sessions/thumbnails/50c6c3d7085e43c5916b248c4d485463-with-play.gif)](https://www.loom.com/share/50c6c3d7085e43c5916b248c4d485463?sid=c7f60638-c20e-4239-847c-f5a5014ad227)
-
-*Haz clic en la imagen para ver el demo completo*
+<div align="center">
+  <a href="https://www.loom.com/share/50c6c3d7085e43c5916b248c4d485463?sid=c7f60638-c20e-4239-847c-f5a5014ad227">
+    <img src="https://cdn.loom.com/sessions/thumbnails/50c6c3d7085e43c5916b248c4d485463-with-play.gif" alt="Demo Video" width="600">
+  </a>
+  <br>
+  <em>📹 Haz clic para ver el demo completo en Loom</em>
+</div>
 
 ## 🎯 Implemented Features
 
