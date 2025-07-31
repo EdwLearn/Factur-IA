@@ -30,11 +30,9 @@
 
 ## 🎥 Demo
 
-<div align="center">
-  <img src="./demo-ezgif.com-video-to-gif-converter.gif" alt="Demo de la aplicación" width="800">
-  <br>
-  <em>Demostración completa de las funcionalidades</em>
-</div>
+[![Ver Demo](https://cdn.loom.com/sessions/thumbnails/50c6c3d7085e43c5916b248c4d485463-with-play.gif)](https://www.loom.com/share/50c6c3d7085e43c5916b248c4d485463?sid=c7f60638-c20e-4239-847c-f5a5014ad227)
+
+*Haz clic en la imagen para ver el demo completo*
 
 ## 🎯 Implemented Features
 
