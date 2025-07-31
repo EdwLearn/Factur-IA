@@ -30,7 +30,9 @@
 
 ## 🎥 Demo
 
-[🎬 Ver Demo Completo](https://www.loom.com/share/50c6c3d7085e43c5916b248c4d485463?sid=c7f60638-c20e-4239-847c-f5a5014ad227)
+[![See Demo](./demo-ezgif.com-video-to-gif-converter.gif)](https://www.loom.com/share/50c6c3d7085e43c5916b248c4d485463?sid=c7f60638-c20e-4239-847c-f5a5014ad227)
+
+*click on GIF to see complete video*
 
 
 ## 🎯 Implemented Features
