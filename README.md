@@ -28,6 +28,8 @@
 📱 Mobile Photo → 🔧 OpenCV Enhancement → 📄 PDF → 🤖 AWS Textract → 📊 Structured Data → 🗄️ PostgreSQL
 ```
 
+<video src="https://www.loom.com/share/50c6c3d7085e43c5916b248c4d485463?sid=38c6677d-7e3d-4df6-bc99-6a00e44986d4" width="320" height="240" controls></video>
+
 ## 🎯 Implemented Features
 
 ### Core Features ✅
