@@ -1,4 +1,4 @@
-# 🚀 Invoice Processing SaaS for Colombian Retail
+# 🚀 FacturIA - Invoice Processing SaaS for Colombian Retail
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://python.org)
 [![AWS](https://img.shields.io/badge/AWS-Lambda%20%7C%20Textract%20%7C%20S3-orange.svg)](https://aws.amazon.com)
