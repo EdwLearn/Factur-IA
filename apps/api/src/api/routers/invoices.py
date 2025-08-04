@@ -3,11 +3,15 @@ Invoice processing endpoints with multi-tenant support - FIXED
 """
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Header
 from fastapi.responses import JSONResponse
-from typing import List, Optional
+from fastapi.responses import Response
 import uuid
 from typing import List, Optional, Dict, Any
 import logging
 from datetime import datetime
+from ...database.connection import AsyncSessionFactory
+from ...database.models import InvoiceLineItem, Product, Tenant
+from ...services.integrations.integration_factory import IntegrationFactory
+from sqlalchemy import select, update
 
 from pydantic import UUID4, ValidationError
 from decimal import Decimal
@@ -27,6 +31,14 @@ from ...models.invoice import (
 from ...config.settings import settings
 from ...services.document_processing import InvoiceProcessorService
 from ...models.invoice import ProcessedInvoice, InvoiceData, InvoiceStatus
+from ...services.duplicate_detection.duplicate_detector import DuplicateDetector
+from ...database.connection import AsyncSessionFactory
+from ...services.integrations.mayasis_integration import MayasisIntegration
+
+
+
+duplicate_detector = DuplicateDetector()
+mayasis_integration = MayasisIntegration()
 
 logger = logging.getLogger(__name__)
 
@@ -328,7 +340,7 @@ async def upload_photo(
             detail=f"Failed to upload photo: {str(e)}"
         )
 
-@router.get("/{invoice_id}/pricing", response_model=PricingDataResponse)
+@router.get("/{invoice_id}/pricing")
 async def get_invoice_pricing_data(
     invoice_id: str,
     tenant_id: str = Depends(get_tenant_id)
@@ -338,67 +350,12 @@ async def get_invoice_pricing_data(
         # Validate UUID format
         invoice_uuid = validate_uuid(invoice_id)
         
-        # TODO: Replace with real database query
-        # For now, return comprehensive mock data
+        pricing_data = await invoice_service.get_pricing_data(invoice_id, tenant_id)
         
-        # Create mock line items with realistic data
-        mock_line_items = [
-            InvoiceLineItemPricing(
-                id=uuid.uuid4(),
-                line_item_id=uuid.uuid4(),
-                product_code="MED-320",
-                description="Medias Deportivas REF 320",
-                quantity=Decimal('24'),
-                unit_price=Decimal('6200'),
-                subtotal=Decimal('148800'),
-                sale_price=None,
-                markup_percentage=None,
-                profit_margin=None,
-                is_priced=False
-            ),
-            InvoiceLineItemPricing(
-                id=uuid.uuid4(),
-                line_item_id=uuid.uuid4(),
-                product_code="ZAP-DEP-45",
-                description="Zapatos Deportivos Talla 45",
-                quantity=Decimal('12'),
-                unit_price=Decimal('28000'),
-                subtotal=Decimal('336000'),
-                sale_price=None,
-                markup_percentage=None,
-                profit_margin=None,
-                is_priced=False
-            ),
-            InvoiceLineItemPricing(
-                id=uuid.uuid4(),
-                line_item_id=uuid.uuid4(),
-                product_code="CAM-COT-M",
-                description="Camiseta Algodón Talla M",
-                quantity=Decimal('36'),
-                unit_price=Decimal('12500'),
-                subtotal=Decimal('450000'),
-                sale_price=None,
-                markup_percentage=None,
-                profit_margin=None,
-                is_priced=False
-            )
-        ]
+        if not pricing_data:
+            raise HTTPException(status_code=404, detail="Invoice not found or no line items")
         
-        # Calculate summary
-        summary = calculate_pricing_summary(mock_line_items)
-        
-        response = PricingDataResponse(
-            invoice_id=invoice_uuid,
-            invoice_number="INV-2024-001",
-            supplier_name="Importadora El Éxito S.A.S",
-            issue_date="2024-07-20",
-            total_amount=summary.total_cost,
-            pricing_status=PricingStatus.PENDING,
-            line_items=mock_line_items,
-            summary=summary
-        )
-        
-        return response
+        return pricing_data
         
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=f"Validation error: {str(e)}")
@@ -412,59 +369,38 @@ async def get_invoice_pricing_data(
 @router.post("/{invoice_id}/pricing")
 async def set_invoice_pricing(
     invoice_id: str,
-    pricing_data: PricingUpdateRequest,
+    pricing_data: Dict[str, Any],
     tenant_id: str = Depends(get_tenant_id)
 ):
-    """Set manual pricing for invoice line items"""
+    """Set manual pricing for invoice line items - REAL DATA"""
     try:
         # Validate UUID format
         invoice_uuid = validate_uuid(invoice_id)
         
-        # Process each pricing update
-        pricing_updates = []
-        for item_update in pricing_data.line_items:
-            # Mock: Get current item data (in real implementation, get from DB)
-            mock_cost_price = Decimal('6200')  # This would come from DB
-            
-            # Calculate metrics
-            markup = calculate_markup_percentage(mock_cost_price, item_update.sale_price)
-            profit_margin = calculate_profit_margin(mock_cost_price, item_update.sale_price)
-            
-            pricing_update = {
-                "line_item_id": str(item_update.line_item_id),
-                "sale_price": float(item_update.sale_price),
-                "markup_percentage": float(markup),
-                "profit_margin": float(profit_margin),
-                "is_priced": True,
-                "cost_price": float(mock_cost_price)
-            }
-            pricing_updates.append(pricing_update)
+        # Use REAL service method
+        updates = await invoice_service.set_invoice_pricing(invoice_id, tenant_id, pricing_data)
         
-        # Mock summary calculation
-        total_cost = Decimal('6200') * len(pricing_data.line_items)
-        total_sale_value = sum(item.sale_price for item in pricing_data.line_items)
+        # Calculate summary
+        total_cost = sum(item.get('cost_price', 0) for item in updates)
+        total_sale_value = sum(item.get('sale_price', 0) for item in updates)
         total_profit = total_sale_value - total_cost
-        avg_markup = (total_profit / total_cost * 100) if total_cost > 0 else Decimal('0')
-        
-        summary = PricingSummary(
-            total_items=len(pricing_data.line_items),
-            priced_items=len(pricing_data.line_items),
-            pending_items=0,
-            total_cost=total_cost,
-            total_sale_value=total_sale_value,
-            total_profit=total_profit,
-            average_markup=round(avg_markup, 2)
-        )
+        avg_markup = (total_profit / total_cost * 100) if total_cost > 0 else 0
         
         return {
             "message": "Pricing updated successfully",
-            "invoice_id": str(invoice_uuid),
-            "updates": pricing_updates,
-            "summary": summary.dict()
+            "invoice_id": invoice_id,
+            "updates": updates,
+            "summary": {
+                "total_items": len(updates),
+                "priced_items": len(updates),
+                "pending_items": 0,
+                "total_cost": total_cost,
+                "total_sale_value": total_sale_value,
+                "total_profit": total_profit,
+                "average_markup": round(avg_markup, 2)
+            }
         }
         
-    except ValidationError as e:
-        raise HTTPException(status_code=400, detail=f"Validation error: {str(e)}")
     except Exception as e:
         logger.error(f"Error setting pricing: {str(e)}")
         raise HTTPException(
@@ -472,65 +408,22 @@ async def set_invoice_pricing(
             detail=f"Failed to set pricing: {str(e)}"
         )
 
-@router.post("/{invoice_id}/confirm-pricing", response_model=Dict[str, Any])
+@router.post("/{invoice_id}/confirm-pricing")
 async def confirm_invoice_pricing(
     invoice_id: str,
     tenant_id: str = Depends(get_tenant_id)
 ):
-    """Confirm pricing and update inventory"""
+    """Confirm pricing and update inventory with REAL data"""
     try:
-        # Validate UUID format
-        invoice_uuid = validate_uuid(invoice_id)
-        
-        # Mock inventory updates
-        inventory_updates = [
-            {
-                "product_code": "MED-320",
-                "description": "Medias Deportivas REF 320",
-                "quantity_added": 24,
-                "cost_price": 6200,
-                "sale_price": 12000,
-                "total_value_added": 148800,
-                "location": "warehouse_a"
-            },
-            {
-                "product_code": "ZAP-DEP-45", 
-                "description": "Zapatos Deportivos Talla 45",
-                "quantity_added": 12,
-                "cost_price": 28000,
-                "sale_price": 55000,
-                "total_value_added": 336000,
-                "location": "warehouse_a"
-            }
-        ]
-        
-        # Mock summary
-        summary = PricingSummary(
-            total_items=2,
-            priced_items=2,
-            pending_items=0,
-            total_cost=Decimal('484800'),
-            total_sale_value=Decimal('948000'),
-            total_profit=Decimal('463200'),
-            average_markup=Decimal('95.53')
-        )
-        
-        response = PricingConfirmationResponse(
-            invoice_id=invoice_uuid,
-            pricing_status=PricingStatus.CONFIRMED,
-            total_items_priced=2,
-            inventory_updates=inventory_updates,
-            summary=summary
-        )
+        # Use REAL service method
+        result = await invoice_service.confirm_invoice_pricing(invoice_id, tenant_id)
         
         return {
             "message": "Pricing confirmed and inventory updated successfully",
-            "invoice_id": str(invoice_uuid),
-            "result": response.dict()
+            "invoice_id": invoice_id,
+            "result": result
         }
         
-    except ValidationError as e:
-        raise HTTPException(status_code=400, detail=f"Validation error: {str(e)}")
     except Exception as e:
         logger.error(f"Error confirming pricing: {str(e)}")
         raise HTTPException(
@@ -585,8 +478,6 @@ async def debug_pricing_data(
             "traceback": traceback.format_exc(),
             "step": "exception"
         }
-
-# Agrega esto a tu invoices.py
 
 @router.post("/test-price-rounding")
 async def test_price_rounding(
@@ -730,6 +621,7 @@ async def get_mock_casoli_data(tenant_id: str = Depends(get_tenant_id)):
         "line_items": mock_items,
         "enhancer_test": "ready"
     }
+    
 
 # ---------------
 
@@ -748,3 +640,442 @@ async def test_endpoint(tenant_id: str = Depends(get_tenant_id)):
         "pricing_system": "Manual pricing with automatic margin calculation",
         "ready_for_ml": "Product matching and pricing recommendations coming next"
     }
+    
+@router.post("/{invoice_id}/check-duplicates")
+async def check_invoice_duplicates(
+    invoice_id: str,
+    tenant_id: str = Depends(get_tenant_id)
+):
+    """Check for duplicate products in invoice line items"""
+    try:
+        # Validate UUID format
+        invoice_uuid = validate_uuid(invoice_id)
+        
+        async with AsyncSessionFactory() as session:
+            from ...database.models import InvoiceLineItem
+            from sqlalchemy import select
+            
+            # Get invoice line items
+            result = await session.execute(
+                select(InvoiceLineItem)
+                .where(InvoiceLineItem.invoice_id == invoice_uuid)
+            )
+            line_items = result.scalars().all()
+            
+            if not line_items:
+                raise HTTPException(
+                    status_code=404, 
+                    detail="No line items found for this invoice"
+                )
+            
+            # Convert to dict format for duplicate checker
+            items_data = []
+            for item in line_items:
+                items_data.append({
+                    "id": str(item.id),
+                    "product_code": item.product_code,
+                    "description": item.description,
+                    "quantity": float(item.quantity),
+                    "unit_price": float(item.unit_price),
+                    "subtotal": float(item.subtotal)
+                })
+            
+            # Check for duplicates
+            duplicate_results = await duplicate_detector.check_invoice_duplicates(
+                invoice_line_items=items_data,
+                tenant_id=tenant_id,
+                db=session
+            )
+            
+            return {
+                "invoice_id": invoice_id,
+                "duplicate_check_completed": True,
+                "results": duplicate_results
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error checking duplicates: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to check duplicates: {str(e)}"
+        )
+
+@router.post("/{invoice_id}/resolve-duplicates")
+async def resolve_invoice_duplicates(
+    invoice_id: str,
+    resolution_data: Dict[str, Any],
+    tenant_id: str = Depends(get_tenant_id)
+):
+    """Resolve duplicate conflicts by linking to existing products or creating new ones"""
+    try:
+        # Validate UUID format
+        invoice_uuid = validate_uuid(invoice_id)
+
+        # Expected format for resolution_data:
+        # {
+        #   "resolutions": [
+        #     {
+        #       "line_item_id": "abc-123",
+        #       "action": "merge_with_existing", # or "create_new_product"
+        #       "existing_product_id": "def-456" # only if action is "merge_with_existing"
+        #     }
+        #   ]
+        # }
+
+        resolutions = resolution_data.get("resolutions", [])
+
+        if not resolutions:
+            raise HTTPException(
+                status_code=400,
+                detail="No resolutions provided"
+            )
+
+        async with AsyncSessionFactory() as session:
+            # Initialize duplicate detector
+            from ...services.duplicate_detection.duplicate_detector import DuplicateDetector
+            duplicate_detector = DuplicateDetector()
+            
+            # Process resolutions
+            result = await duplicate_detector.resolve_duplicates(
+                resolutions=resolutions,
+                tenant_id=tenant_id,
+                db=session
+            )
+            
+            # If all resolutions were successful, update invoice status
+            if result.get("failed", 0) == 0:
+                # Update invoice pricing status to indicate duplicates resolved
+                invoice_query = select(ProcessedInvoice).where(
+                    ProcessedInvoice.id == invoice_uuid,
+                    ProcessedInvoice.tenant_id == tenant_id
+                )
+                invoice_result = await session.execute(invoice_query)
+                invoice = invoice_result.scalar_one_or_none()
+                
+                if invoice:
+                    if invoice.pricing_status == "pending_duplicates":
+                        invoice.pricing_status = "duplicates_resolved"
+                        await session.commit()
+            
+            return {
+                "duplicate_resolution_completed": True,
+                "invoice_id": invoice_id,
+                **result
+            }
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error resolving duplicates for invoice {invoice_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error during duplicate resolution"
+        )
+
+@router.get("/{invoice_id}/duplicate-suggestions/{line_item_id}")
+async def get_duplicate_suggestions(
+    invoice_id: str,
+    line_item_id: str,
+    tenant_id: str = Depends(get_tenant_id)
+):
+    """Get specific duplicate suggestions for a line item"""
+    try:
+        # Validate UUIDs
+        invoice_uuid = validate_uuid(invoice_id)
+        line_item_uuid = validate_uuid(line_item_id)
+        
+        async with AsyncSessionFactory() as session:
+            from ...database.models import InvoiceLineItem
+            from sqlalchemy import select
+            
+            # Get the specific line item
+            result = await session.execute(
+                select(InvoiceLineItem)
+                .where(InvoiceLineItem.id == line_item_uuid)
+                .where(InvoiceLineItem.invoice_id == invoice_uuid)
+            )
+            line_item = result.scalar_one_or_none()
+            
+            if not line_item:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Line item not found"
+                )
+            
+            # Find similar products
+            similar_products = await duplicate_detector.find_similar_products(
+                product_description=line_item.description,
+                product_code=line_item.product_code,
+                tenant_id=tenant_id,
+                db=session
+            )
+            
+            return {
+                "invoice_id": invoice_id,
+                "line_item_id": line_item_id,
+                "line_item_info": {
+                    "product_code": line_item.product_code,
+                    "description": line_item.description,
+                    "quantity": float(line_item.quantity),
+                    "unit_price": float(line_item.unit_price)
+                },
+                "similar_products": similar_products,
+                "suggestions_count": len(similar_products)
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting duplicate suggestions: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get suggestions: {str(e)}"
+        )
+        
+        
+@router.get("/{invoice_id}/export-mayasis")
+async def export_to_mayasis(
+    invoice_id: str,
+    tenant_id: str = Depends(get_tenant_id)
+):
+    """Export confirmed invoice to Mayasis CSV format"""
+    try:
+        # Get invoice pricing data
+        pricing_data = await invoice_service.get_pricing_data(invoice_id, tenant_id)
+        
+        if not pricing_data:
+            raise HTTPException(status_code=404, detail="Invoice not found")
+        
+        # Generate CSV
+        csv_content = await mayasis_integration.prepare_invoice_for_mayasis(pricing_data)
+        
+        # Return as downloadable file
+        return Response(
+            content=csv_content,
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename=mayasis_import_{invoice_id}.csv"}
+        )
+        
+    except Exception as e:
+        logger.error(f"Error exporting to Mayasis: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@router.get("/test-duplicates")
+async def test_duplicate_system(tenant_id: str = Depends(get_tenant_id)):
+    """Test endpoint to verify duplicate detection system is working"""
+    try:
+        # Test the duplicate detector with sample data
+        test_description = "Nike Air Max zapatos deportivos"
+        
+        async with AsyncSessionFactory() as session:
+            similar_products = await duplicate_detector.find_similar_products(
+                product_description=test_description,
+                product_code="NIKE-001",
+                tenant_id=tenant_id,
+                db=session
+            )
+            
+            return {
+                "message": "Duplicate detection system is working!",
+                "test_description": test_description,
+                "similar_products_found": len(similar_products),
+                "similarity_threshold": duplicate_detector.similarity_threshold,
+                "status": "✅ Ready for use"
+            }
+            
+    except Exception as e:
+        logger.error(f"Error testing duplicate system: {str(e)}")
+        return {
+            "message": "Duplicate detection system error",
+            "error": str(e),
+            "status": "❌ Needs attention"
+        }
+        
+@router.post("/{invoice_id}/export-to-pos")
+async def export_invoice_to_pos(
+    invoice_id: str,
+    tenant_id: str = Depends(get_tenant_id)
+):
+    """Export invoice products to POS using configured integration"""
+    try:
+        invoice_uuid = validate_uuid(invoice_id)
+        
+        async with AsyncSessionFactory() as session:
+            # Get tenant configuration
+            tenant_query = select(Tenant).where(Tenant.tenant_id == tenant_id)
+            tenant_result = await session.execute(tenant_query)
+            tenant = tenant_result.scalar_one_or_none()
+            
+            if not tenant:
+                raise HTTPException(status_code=404, detail="Tenant not found")
+            
+            # Get products from confirmed invoice
+            products_query = select(Product).where(Product.tenant_id == tenant_id)
+            products_result = await session.execute(products_query)
+            products = products_result.scalars().all()
+            
+            # Convert to dict format
+            products_data = []
+            for product in products:
+                products_data.append({
+                    "product_code": product.product_code,
+                    "description": product.description,
+                    "current_stock": float(product.current_stock or 0),
+                    "last_purchase_price": float(product.last_purchase_price or 0),
+                    "sale_price": 0,  # TODO: get from pricing
+                    "category": "GENERAL"
+                })
+            
+            # Create integration using factory
+            integration_config = tenant.integration_config or {}
+            integration = IntegrationFactory.create_integration(integration_config)
+            
+            # Export to POS
+            result = await integration.export_inventory(products_data)
+            
+            return {
+                "invoice_id": invoice_id,
+                "pos_system": integration_config.get("pos_system", "generic"),
+                "integration_type": integration_config.get("integration_type", "csv_manual"),
+                "products_count": len(products_data),
+                "export_result": result
+            }
+            
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error exporting to POS: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error exporting to POS")
+
+@router.get("/integration-status")
+async def get_integration_status(
+    tenant_id: str = Depends(get_tenant_id)
+):
+    """Get current integration configuration and status"""
+    try:
+        async with AsyncSessionFactory() as session:
+            # Get tenant
+            tenant_query = select(Tenant).where(Tenant.tenant_id == tenant_id)
+            tenant_result = await session.execute(tenant_query)
+            tenant = tenant_result.scalar_one_or_none()
+            
+            if not tenant:
+                raise HTTPException(status_code=404, detail="Tenant not found")
+            
+            integration_config = tenant.integration_config or {}
+            
+            # Create integration to get status
+            integration = IntegrationFactory.create_integration(integration_config)
+            status = integration.get_status()
+            
+            return {
+                "tenant_id": tenant_id,
+                "current_config": integration_config,
+                "status": status,
+                "supported_systems": IntegrationFactory.get_supported_systems()
+            }
+            
+    except Exception as e:
+        logger.error(f"Error getting integration status: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error getting integration status")
+
+@router.post("/configure-integration")
+async def configure_integration(
+    config_data: Dict[str, Any],
+    tenant_id: str = Depends(get_tenant_id)
+):
+    """Configure POS integration for tenant"""
+    try:
+        # Validate configuration
+        validation = IntegrationFactory.validate_config(config_data)
+        if not validation["valid"]:
+            raise HTTPException(status_code=400, detail=validation["error"])
+        
+        async with AsyncSessionFactory() as session:
+            # Get tenant
+            tenant_query = select(Tenant).where(Tenant.tenant_id == tenant_id)
+            tenant_result = await session.execute(tenant_query)
+            tenant = tenant_result.scalar_one_or_none()
+            
+            if not tenant:
+                raise HTTPException(status_code=404, detail="Tenant not found")
+            
+            # Update configuration
+            tenant.integration_config = config_data
+            await session.commit()
+            
+            return {
+                "message": "Integration configuration updated successfully",
+                "config": config_data
+            }
+            
+    except Exception as e:
+        logger.error(f"Error configuring integration: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error configuring integration")
+    
+# Agregar este endpoint simple al final de apps/api/src/api/routers/invoices.py
+
+@router.get("/test-factory")
+async def test_factory(tenant_id: str = Depends(get_tenant_id)):
+    """Test endpoint para verificar factory functionality"""
+    try:
+        async with AsyncSessionFactory() as session:
+            # Get tenant with error handling
+            tenant_query = select(Tenant).where(Tenant.tenant_id == tenant_id)
+            tenant_result = await session.execute(tenant_query)
+            tenant = tenant_result.scalar_one_or_none()
+            
+            if not tenant:
+                return {"error": f"Tenant {tenant_id} not found"}
+            
+            # Get products with error handling
+            products_query = select(Product).where(Product.tenant_id == tenant_id)
+            products_result = await session.execute(products_query)
+            products = products_result.scalars().all()
+            
+            # Convert products to dict
+            products_data = []
+            for product in products:
+                try:
+                    products_data.append({
+                        "product_code": str(product.product_code or ""),
+                        "description": str(product.description or ""),
+                        "current_stock": float(product.current_stock or 0),
+                        "last_purchase_price": float(product.last_purchase_price or 0),
+                        "sale_price": 0,
+                        "category": "GENERAL"
+                    })
+                except Exception as product_error:
+                    return {"error": f"Product conversion error: {str(product_error)}"}
+            
+            # Test integration config
+            integration_config = tenant.integration_config or {}
+            
+            # Create integration
+            try:
+                integration = IntegrationFactory.create_integration(integration_config)
+            except Exception as factory_error:
+                return {"error": f"Factory error: {str(factory_error)}"}
+            
+            # Test export
+            try:
+                result = await integration.export_inventory(products_data)
+                
+                return {
+                    "success": True,
+                    "tenant_id": tenant_id,
+                    "products_count": len(products_data),
+                    "integration_config": integration_config,
+                    "export_result": result
+                }
+            except Exception as export_error:
+                return {"error": f"Export error: {str(export_error)}"}
+            
+    except Exception as e:
+        import traceback
+        return {
+            "error": f"General error: {str(e)}",
+            "traceback": traceback.format_exc()
+        }

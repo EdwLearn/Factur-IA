@@ -30,6 +30,8 @@ class Tenant(Base):
     # Relationships
     invoices = relationship("ProcessedInvoice", back_populates="tenant", cascade="all, delete-orphan")
     billing_records = relationship("BillingRecord", back_populates="tenant")
+    
+    integration_config = Column(JSONB, nullable=True, default={})
 
 class ProcessedInvoice(Base):
     """Processed invoices with multi-tenant support"""
@@ -227,3 +229,36 @@ class Product(Base):
     __table_args__ = (
         Index('idx_product_code_tenant', 'product_code', 'tenant_id'),
     )
+    
+class InventoryMovement(Base):
+    """Track inventory movements"""
+    __tablename__ = "inventory_movements"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False)
+    movement_type = Column(String(50), nullable=False)  # 'purchase', 'sale', 'adjustment'
+    quantity = Column(Numeric(15, 4), nullable=False)
+    reference_price = Column(Numeric(15, 2))
+    movement_date = Column(DateTime, default=datetime.utcnow)
+    invoice_id = Column(UUID(as_uuid=True), ForeignKey("processed_invoices.id"))
+    notes = Column(Text)
+    
+    # Relationships
+    product = relationship("Product")
+    invoice = relationship("ProcessedInvoice")
+
+class DefectiveProduct(Base):
+    """Track defective products"""
+    __tablename__ = "defective_products"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False)
+    quantity = Column(Numeric(15, 4), nullable=False)
+    reason = Column(String(255), nullable=False)  # 'damaged', 'returned', 'expired'
+    notes = Column(Text)
+    created_date = Column(DateTime, default=datetime.utcnow)
+    invoice_id = Column(UUID(as_uuid=True), ForeignKey("processed_invoices.id"))
+    
+    # Relationships
+    product = relationship("Product")
+    invoice = relationship("ProcessedInvoice")

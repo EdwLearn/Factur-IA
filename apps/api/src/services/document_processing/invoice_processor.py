@@ -621,7 +621,8 @@ class InvoiceProcessorService:
                 pricing_items = []
                 for item in line_items:
                     pricing_items.append({
-                        "id": str(item.id),
+                        "id": str(uuid.uuid4()),
+                        "line_item_id": str(item.id),
                         "product_code": item.product_code or "",
                         "description": item.description or "",
                         "quantity": float(item.quantity),
@@ -659,36 +660,36 @@ class InvoiceProcessorService:
                 return None
 
     async def set_invoice_pricing(self, invoice_id: str, tenant_id: str, pricing_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Set manual pricing for line items"""
+        """Set manual pricing for line items - REAL IMPLEMENTATION"""
         async with AsyncSessionFactory() as session:
             try:
-                # Get line items to update
                 line_items_data = pricing_data.get('line_items', [])
-                
-                updated_items = 0
-                total_cost = Decimal('0')
-                total_sale_value = Decimal('0')
-                
+            
+                if not line_items_data:
+                    raise Exception("No line items provided for pricing")
+            
+                updated_items = []
+            
                 for item_data in line_items_data:
                     line_item_id = item_data.get('line_item_id')
                     sale_price = item_data.get('sale_price')
-                    
+                
                     if not line_item_id or not sale_price:
                         continue
-                    
+                
                     # Get the line item
                     result = await session.execute(
                         select(InvoiceLineItem)
                         .where(InvoiceLineItem.id == uuid.UUID(line_item_id))
-                        .where(InvoiceLineItem.invoice_id == uuid.UUID(invoice_id))
                     )
                     line_item = result.scalar_one_or_none()
-                    
+                
                     if line_item:
                         # Calculate markup percentage
                         cost_per_unit = line_item.unit_price
                         markup = ((Decimal(str(sale_price)) - cost_per_unit) / cost_per_unit) * 100
-                        
+                        profit_margin = ((Decimal(str(sale_price)) - cost_per_unit) / Decimal(str(sale_price))) * 100
+                    
                         # Update line item
                         await session.execute(
                             update(InvoiceLineItem)
@@ -699,37 +700,20 @@ class InvoiceProcessorService:
                                 is_priced=True
                             )
                         )
-                        
-                        # Calculate totals
-                        item_cost = line_item.subtotal
-                        item_sale_value = Decimal(str(sale_price)) * line_item.quantity
-                        
-                        total_cost += item_cost
-                        total_sale_value += item_sale_value
-                        updated_items += 1
-                
-                # Update invoice pricing status
-                await session.execute(
-                    update(ProcessedInvoice)
-                    .where(ProcessedInvoice.id == uuid.UUID(invoice_id))
-                    .where(ProcessedInvoice.tenant_id == tenant_id)
-                    .values(pricing_status="partial")  # Will be updated to "completed" when all items are priced
-                )
-                
+                    
+                        updated_items.append({
+                            "line_item_id": line_item_id,
+                            "sale_price": float(sale_price),
+                            "markup_percentage": float(markup),
+                            "profit_margin": float(profit_margin),
+                            "is_priced": True,
+                            "cost_price": float(cost_per_unit)
+                        })
+            
                 await session.commit()
-                
-                # Calculate summary
-                total_profit = total_sale_value - total_cost
-                average_markup = ((total_sale_value - total_cost) / total_cost * 100) if total_cost > 0 else Decimal('0')
-                
-                return {
-                    "updated_items": updated_items,
-                    "total_cost": float(total_cost),
-                    "total_sale_value": float(total_sale_value),
-                    "total_profit": float(total_profit),
-                    "average_markup": float(average_markup)
-                }
-                
+            
+                return updated_items
+            
             except Exception as e:
                 await session.rollback()
                 logger.error(f"Error setting pricing: {str(e)}")
@@ -739,40 +723,93 @@ class InvoiceProcessorService:
         """Confirm pricing and prepare for inventory update"""
         async with AsyncSessionFactory() as session:
             try:
-                # Check if all items are priced
+                # Get priced line items
+                from ...database.models import Product
+                from sqlalchemy import select, update
+                from datetime import datetime
+                
+                
                 result = await session.execute(
                     select(InvoiceLineItem)
                     .where(InvoiceLineItem.invoice_id == uuid.UUID(invoice_id))
-                )
-                line_items = result.scalars().all()
+                    .where(InvoiceLineItem.is_priced == True)
+               )
                 
-                unpriced_items = [item for item in line_items if not getattr(item, 'is_priced', False)]
+                priced_items = result.scalars().all()
+            
+                if not priced_items:
+                    raise Exception("No priced items found to confirm")
+            
+                inventory_updates = []
+
+                for item in priced_items:
+                    # Check if product exists
+                    product_result = await session.execute(
+                        select(Product)
+                        .where(Product.product_code == item.product_code)
+                        .where(Product.tenant_id == tenant_id)
+                    )
+                    existing_product = product_result.scalar_one_or_none()
                 
-                if unpriced_items:
-                    raise Exception(f"Cannot confirm pricing: {len(unpriced_items)} items still need pricing")
-                
+                    if existing_product:
+                        # Update existing product
+                        new_stock = (existing_product.current_stock or 0) + item.quantity
+                        await session.execute(
+                            update(Product)
+                            .where(Product.id == existing_product.id)
+                            .values(
+                                current_stock=new_stock,
+                                last_purchase_price=item.unit_price,
+                                last_purchase_date=datetime.utcnow().date(),
+                                updated_at=datetime.utcnow()
+                            )
+                        )
+                    
+                        inventory_updates.append({
+                            "action": "updated_existing",
+                            "product_code": item.product_code,
+                            "quantity_added": float(item.quantity),
+                            "new_stock": float(new_stock)
+                        })
+                    else:
+                        # Create new product
+                        new_product = Product(
+                            tenant_id=tenant_id,
+                            product_code=item.product_code,
+                            description=item.description,
+                            current_stock=item.quantity,
+                            last_purchase_price=item.unit_price,
+                            last_purchase_date=datetime.utcnow().date()
+                        )
+                        session.add(new_product)
+                    
+                        inventory_updates.append({
+                            "action": "created_new",
+                            "product_code": item.product_code,
+                            "quantity_added": float(item.quantity),
+                            "new_stock": float(item.quantity)
+                        })
+            
                 # Update invoice status
                 await session.execute(
                     update(ProcessedInvoice)
                     .where(ProcessedInvoice.id == uuid.UUID(invoice_id))
-                    .where(ProcessedInvoice.tenant_id == tenant_id)
                     .values(pricing_status="confirmed")
                 )
-                
+            
                 await session.commit()
-                
-                # TODO: Here we'll add inventory update logic in next step
-                
+            
                 return {
                     "status": "confirmed",
-                    "ready_for_inventory": True,
-                    "total_items": len(line_items)
+                    "inventory_updated": True,
+                    "total_items": len(priced_items),
+                    "inventory_updates": inventory_updates
                 }
-                
+            
             except Exception as e:
                 await session.rollback()
                 logger.error(f"Error confirming pricing: {str(e)}")
-                raise
+                raise   
 
     def _safe_date(self, value) -> Optional[date]:
         """Safely convert to date object"""
