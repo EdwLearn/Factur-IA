@@ -74,8 +74,8 @@ services:
       - DB_NAME=document_processing
       - REDIS_HOST=redis
     volumes:
-      - ./src:/app/src
-      - ./.env:/app/.env
+      - .:/app
+      - .env
     depends_on:
       postgres:
         condition: service_healthy

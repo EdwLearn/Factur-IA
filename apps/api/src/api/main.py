@@ -11,6 +11,9 @@ from contextlib import asynccontextmanager
 from ..config.settings import settings
 from ..database.connection import init_database, close_database, create_tables, check_database_health
 from .routers import invoices
+from dotenv import load_dotenv
+load_dotenv(".env")
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
