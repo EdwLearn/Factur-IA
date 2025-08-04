@@ -9,6 +9,7 @@ from datetime import datetime, date
 from decimal import Decimal
 from sqlalchemy import select, update, delete, func
 from sqlalchemy.orm import selectinload
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...config.settings import settings
 from ...database.connection import AsyncSessionFactory
@@ -659,12 +660,12 @@ class InvoiceProcessorService:
                 logger.error(f"Traceback: {traceback.format_exc()}")
                 return None
 
-    async def set_invoice_pricing(self, invoice_id: str, tenant_id: str, pricing_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Set manual pricing for line items - REAL IMPLEMENTATION"""
+    async def set_invoice_pricing(self, invoice_id: str, tenant_id: str, pricing_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Set manual pricing for line items - IMPLEMENTACIÓN REAL"""
         async with AsyncSessionFactory() as session:
             try:
                 line_items_data = pricing_data.get('line_items', [])
-            
+
                 if not line_items_data:
                     raise Exception("No line items provided for pricing")
             
@@ -675,49 +676,115 @@ class InvoiceProcessorService:
                     sale_price = item_data.get('sale_price')
                 
                     if not line_item_id or not sale_price:
+                        logger.warning(f"Skipping incomplete item: {item_data}")
                         continue
                 
-                    # Get the line item
-                    result = await session.execute(
-                        select(InvoiceLineItem)
-                        .where(InvoiceLineItem.id == uuid.UUID(line_item_id))
-                    )
-                    line_item = result.scalar_one_or_none()
-                
-                    if line_item:
-                        # Calculate markup percentage
-                        cost_per_unit = line_item.unit_price
-                        markup = ((Decimal(str(sale_price)) - cost_per_unit) / cost_per_unit) * 100
-                        profit_margin = ((Decimal(str(sale_price)) - cost_per_unit) / Decimal(str(sale_price))) * 100
+                    try:
+                        # 1. Obtener el line item de la base de datos
+                        result = await session.execute(
+                            select(InvoiceLineItem)
+                            .where(InvoiceLineItem.id == uuid.UUID(line_item_id))
+                        )
+                        line_item = result.scalar_one_or_none()
                     
-                        # Update line item
+                        if not line_item:
+                            logger.warning(f"Line item not found: {line_item_id}")
+                            continue
+
+                        # 2. Calcular márgenes automáticamente
+                        cost_per_unit = line_item.unit_price
+                        sale_price_decimal = Decimal(str(sale_price))
+                    
+                        if cost_per_unit > 0:
+                            markup_percentage = ((sale_price_decimal - cost_per_unit) / cost_per_unit) * 100
+                            profit_margin = ((sale_price_decimal - cost_per_unit) / sale_price_decimal) * 100
+                        else:
+                            markup_percentage = Decimal('0')
+                            profit_margin = Decimal('0')
+                    
+                        # 3. Actualizar en la base de datos - REAL DATA
                         await session.execute(
                             update(InvoiceLineItem)
                             .where(InvoiceLineItem.id == line_item.id)
                             .values(
-                                sale_price=Decimal(str(sale_price)),
-                                markup_percentage=markup,
+                                sale_price=sale_price_decimal,
+                                markup_percentage=markup_percentage,
                                 is_priced=True
                             )
                         )
                     
+                        # 4. Preparar respuesta
                         updated_items.append({
-                            "line_item_id": line_item_id,
-                            "sale_price": float(sale_price),
-                            "markup_percentage": float(markup),
+                            "line_item_id": str(line_item_id),
+                            "product_code": line_item.product_code,
+                            "description": line_item.description,
+                            "quantity": float(line_item.quantity),
+                            "cost_price": float(cost_per_unit),
+                            "sale_price": float(sale_price_decimal),
+                            "markup_percentage": float(markup_percentage),
                             "profit_margin": float(profit_margin),
                             "is_priced": True,
-                            "cost_price": float(cost_per_unit)
+                            "total_sale_value": float(sale_price_decimal * line_item.quantity),
+                            "total_profit": float((sale_price_decimal - cost_per_unit) * line_item.quantity)
                         })
+                    
+                        logger.info(f"✅ Updated pricing for {line_item.product_code}: ${cost_per_unit} → ${sale_price_decimal} ({markup_percentage:.1f}% markup)")
+                    
+                    except Exception as item_error:
+                        logger.error(f"Error updating line item {line_item_id}: {str(item_error)}")
+                        continue
             
+                # 5. Commit todas las actualizaciones
                 await session.commit()
             
+                # 6. Actualizar el status de la factura si todos los items están pricing
+                if updated_items:
+                    await self._update_invoice_pricing_status(invoice_id, session)
+            
+                logger.info(f"💾 PRICING SAVED: Updated {len(updated_items)} items for invoice {invoice_id}")
                 return updated_items
             
             except Exception as e:
                 await session.rollback()
-                logger.error(f"Error setting pricing: {str(e)}")
+                logger.error(f"❌ Error setting invoice pricing: {str(e)}")
                 raise
+    async def _update_invoice_pricing_status(self, invoice_id: str, session: AsyncSession):
+        """Update invoice pricing status based on priced items"""
+        try:
+            # Contar items totales vs items con precio
+            total_items_result = await session.execute(
+                select(func.count(InvoiceLineItem.id))
+                .where(InvoiceLineItem.invoice_id == uuid.UUID(invoice_id))
+            )
+            total_items = total_items_result.scalar() or 0
+        
+            priced_items_result = await session.execute(
+                select(func.count(InvoiceLineItem.id))
+                .where(InvoiceLineItem.invoice_id == uuid.UUID(invoice_id))
+                .where(InvoiceLineItem.is_priced == True)
+            )
+            priced_items = priced_items_result.scalar() or 0
+        
+            # Determinar status
+            if priced_items == 0:
+                status = "pending"
+            elif priced_items < total_items:
+                status = "partial"
+            else:
+                status = "completed"
+        
+            # Actualizar invoice
+            await session.execute(
+                update(ProcessedInvoice)
+                .where(ProcessedInvoice.id == uuid.UUID(invoice_id))
+                .values(pricing_status=status)
+            )
+        
+            logger.info(f"📊 Updated pricing status to '{status}' ({priced_items}/{total_items} items priced)")
+        
+        except Exception as e:
+            logger.warning(f"Could not update pricing status: {str(e)}")
+            
 
     async def confirm_invoice_pricing(self, invoice_id: str, tenant_id: str) -> Dict[str, Any]:
         """Confirm pricing and prepare for inventory update"""

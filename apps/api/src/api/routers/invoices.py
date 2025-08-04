@@ -366,47 +366,135 @@ async def get_invoice_pricing_data(
             detail=f"Failed to get pricing data: {str(e)}"
         )
 
+# Actualizar en: apps/api/src/api/routers/invoices.py
+# Reemplazar el método set_invoice_pricing existente
+
 @router.post("/{invoice_id}/pricing")
 async def set_invoice_pricing(
     invoice_id: str,
     pricing_data: Dict[str, Any],
     tenant_id: str = Depends(get_tenant_id)
 ):
-    """Set manual pricing for invoice line items - REAL DATA"""
+    """Set manual pricing for invoice line items - DATOS REALES"""
     try:
-        # Validate UUID format
+        # Validar UUID format
         invoice_uuid = validate_uuid(invoice_id)
         
-        # Use REAL service method
-        updates = await invoice_service.set_invoice_pricing(invoice_id, tenant_id, pricing_data)
+        # Validar que tenemos line_items
+        line_items = pricing_data.get('line_items')
+        if not line_items:
+            raise HTTPException(
+                status_code=400,
+                detail="Missing 'line_items' in request body"
+            )
         
-        # Calculate summary
-        total_cost = sum(item.get('cost_price', 0) for item in updates)
-        total_sale_value = sum(item.get('sale_price', 0) for item in updates)
-        total_profit = total_sale_value - total_cost
+        # Validar formato de line_items
+        for item in line_items:
+            if not item.get('line_item_id'):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Missing 'line_item_id' in line item"
+                )
+            if not item.get('sale_price') or float(item.get('sale_price', 0)) <= 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid 'sale_price' for item {item.get('line_item_id')}"
+                )
+        
+        logger.info(f"💰 Setting pricing for invoice {invoice_id}: {len(line_items)} items")
+        
+        # Llamar al service REAL
+        updated_items = await invoice_service.set_invoice_pricing(
+            invoice_id, tenant_id, pricing_data
+        )
+        
+        if not updated_items:
+            raise HTTPException(
+                status_code=400,
+                detail="No items were updated. Check line_item_ids and sale_prices."
+            )
+        
+        # Calcular summary
+        total_cost = sum(item.get('cost_price', 0) * item.get('quantity', 0) for item in updated_items)
+        total_sale_value = sum(item.get('total_sale_value', 0) for item in updated_items)
+        total_profit = sum(item.get('total_profit', 0) for item in updated_items)
         avg_markup = (total_profit / total_cost * 100) if total_cost > 0 else 0
         
-        return {
-            "message": "Pricing updated successfully",
+        response = {
+            "message": "Pricing updated successfully with REAL data",
             "invoice_id": invoice_id,
-            "updates": updates,
+            "updated_items": len(updated_items),
+            "items": updated_items,
             "summary": {
-                "total_items": len(updates),
-                "priced_items": len(updates),
-                "pending_items": 0,
-                "total_cost": total_cost,
-                "total_sale_value": total_sale_value,
-                "total_profit": total_profit,
-                "average_markup": round(avg_markup, 2)
+                "total_items": len(updated_items),
+                "total_cost": round(total_cost, 2),
+                "total_sale_value": round(total_sale_value, 2),
+                "total_profit": round(total_profit, 2),
+                "average_markup": round(avg_markup, 2),
+                "status": "✅ Data saved to database"
             }
         }
         
+        logger.info(f"✅ PRICING SUCCESS: {len(updated_items)} items updated for invoice {invoice_id}")
+        return response
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error setting pricing: {str(e)}")
+        logger.error(f"❌ Error setting pricing for invoice {invoice_id}: {str(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to set pricing: {str(e)}"
+            detail=f"Internal server error: {str(e)}"
         )
+
+# Add a endpoint to verify save data
+@router.get("/{invoice_id}/pricing-verification")
+async def verify_pricing_data(
+    invoice_id: str,
+    tenant_id: str = Depends(get_tenant_id)
+):
+    """Verify that pricing data was saved correctly"""
+    try:
+        async with AsyncSessionFactory() as session:
+            # Get line items with pricing
+            result = await session.execute(
+                select(InvoiceLineItem)
+                .where(InvoiceLineItem.invoice_id == uuid.UUID(invoice_id))
+            )
+            line_items = result.scalars().all()
+            
+            verification_data = []
+            for item in line_items:
+                verification_data.append({
+                    "line_item_id": str(item.id),
+                    "product_code": item.product_code,
+                    "description": item.description[:50] + "..." if len(item.description or "") > 50 else item.description,
+                    "cost_price": float(item.unit_price) if item.unit_price else 0,
+                    "sale_price": float(item.sale_price) if item.sale_price else None,
+                    "markup_percentage": float(item.markup_percentage) if item.markup_percentage else None,
+                    "is_priced": item.is_priced,
+                    "database_status": "✅ Saved" if item.sale_price else "⚠️ Not priced"
+                })
+            
+            priced_count = sum(1 for item in verification_data if item["sale_price"])
+            
+            return {
+                "invoice_id": invoice_id,
+                "verification_timestamp": datetime.utcnow().isoformat(),
+                "total_items": len(verification_data),
+                "priced_items": priced_count,
+                "pending_items": len(verification_data) - priced_count,
+                "database_verification": "✅ Connected and readable",
+                "items": verification_data
+            }
+            
+    except Exception as e:
+        logger.error(f"Error verifying pricing data: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Verification failed: {str(e)}")
+
+
 
 @router.post("/{invoice_id}/confirm-pricing")
 async def confirm_invoice_pricing(

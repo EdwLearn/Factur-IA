@@ -2,7 +2,7 @@
 
 import type React from "react"
 
-import { useState, useCallback, useRef } from "react"
+import { useState, useCallback, useRef, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
@@ -32,12 +32,19 @@ import { ConfigurationPage } from "@/components/configuration-page"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts"
 
+import { facturaAPI, InvoiceUploadResponse, InvoiceStatus, PricingInfo } from '@/lib/api'
+
 export default function FacturIADashboard() {
   const [activeTab, setActiveTab] = useState("Dashboard")
   const [dragActive, setDragActive] = useState(false)
+
   const [uploadedFiles, setUploadedFiles] = useState<File[]>([])
   const [uploadProgress, setUploadProgress] = useState<{ [key: string]: number }>({})
   const [isUploading, setIsUploading] = useState(false)
+  const [uploadedInvoices, setUploadedInvoices] = useState<InvoiceUploadResponse[]>([])
+  const [processingStatus, setProcessingStatus] = useState<{ [key: string]: InvoiceStatus }>({})
+  const [apiError, setApiError] = useState<string | null>(null)
+  
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const [selectedInvoice, setSelectedInvoice] = useState<any>(null)
@@ -163,6 +170,7 @@ export default function FacturIADashboard() {
     { product: "Accesorios", current: 28, projected: 35 },
     { product: "Blusas", current: 5, projected: 1 },
   ]
+
 
   const validateFile = (file: File): boolean => {
     const allowedTypes = ["application/pdf", "image/jpeg", "image/jpg", "image/png"]
