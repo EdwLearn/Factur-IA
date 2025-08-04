@@ -1,6 +1,15 @@
 [build]
 builder = "NIXPACKS"
 
-[deploy]
-healthcheckPath = "/health"
-healthcheckTimeout = 300
+[phases.setup]
+nixPkgs = ["python311"]
+
+[phases.install]
+cmds = ["pip install --upgrade pip", "pip install -r apps/api/requirements.txt"]
+
+[phases.build]
+cmds = []
+
+[phases.start]
+cmd = "uvicorn src.api.main:app --host 0.0.0.0 --port 8000"
+
