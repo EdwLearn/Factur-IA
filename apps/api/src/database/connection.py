@@ -6,10 +6,21 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from databases import Database
 import logging
+import os
 
 from ..config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+
+# Railway database URL
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+# Fix Railway postgres URL format
+if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+ASYNC_DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1) if DATABASE_URL else None
 
 # Async engine for SQLAlchemy
 engine = create_async_engine(
