@@ -24,6 +24,15 @@ import {
   CheckCircle,
   FileIcon,
 } from "lucide-react"
+// Import API :
+import { 
+  facturaAPI, 
+  usePricingWorkflow,
+  type InvoiceUploadResponse,
+  type InvoiceStatus,
+  type PricingInfo 
+} from "@/lib/api"
+
 import { InventoryPage } from "@/components/inventory-page"
 import { InvoiceManagementPage } from "@/components/invoice-management-page"
 import { SupplierManagementPage } from "@/components/supplier-management-page"
@@ -31,13 +40,18 @@ import { ReportsAnalyticsPage } from "@/components/reports-analytics-page"
 import { ConfigurationPage } from "@/components/configuration-page"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts"
+import { itemAxisPredicate } from "recharts/types/state/selectors/axisSelectors"
 
 export default function FacturIADashboard() {
   const [activeTab, setActiveTab] = useState("Dashboard")
   const [dragActive, setDragActive] = useState(false)
   const [uploadedFiles, setUploadedFiles] = useState<File[]>([])
   const [uploadProgress, setUploadProgress] = useState<{ [key: string]: number }>({})
+  //const [isUploading, setIsUploading] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
+  const [uploadedInvoices, setUploadedInvoices] = useState<InvoiceUploadResponse[]>([])
+  const [invoiceStatuses, setInvoiceStatuses] = useState<{[key: string]: InvoiceStatus}>({})
+  const [processingError, setProcessingError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const [selectedInvoice, setSelectedInvoice] = useState<any>(null)
@@ -193,31 +207,105 @@ export default function FacturIADashboard() {
 
     if (validFiles.length > 0) {
       setUploadedFiles((prev) => [...prev, ...validFiles])
-      simulateUpload(validFiles)
     }
   }, [])
 
-  const simulateUpload = (files: File[]) => {
+  const processFiles = async () => {
+    if (uploadedFiles.length === 0) {
+      alert("Por favor selecciona archivos primero")
+      return
+    }
+
     setIsUploading(true)
+    setProcessingError(null)
+    const newInvoices: InvoiceUploadResponse[] = []
 
-    files.forEach((file) => {
-      let progress = 0
-      const interval = setInterval(() => {
-        progress += Math.random() * 30
-        if (progress >= 100) {
-          progress = 100
-          clearInterval(interval)
-          setUploadProgress((prev) => ({ ...prev, [file.name]: 100 }))
-
-          // Check if all files are uploaded
-          setTimeout(() => {
-            setIsUploading(false)
-          }, 500)
-        } else {
-          setUploadProgress((prev) => ({ ...prev, [file.name]: Math.round(progress) }))
+    try {
+      for (const file of uploadedFiles) {
+        console.log(`🔄 Procesando: ${file.name}`)
+      
+        // Start progress
+        setUploadProgress(prev => ({ ...prev, [file.name]: 0 }))
+      
+        const progressInterval = setInterval(() => {
+          setUploadProgress(prev => {
+            const current = prev[file.name] || 0
+            if (current < 90) {
+              return { ...prev, [file.name]: current + 15 }
+            }
+            return prev
+          })
+        }, 300)
+      
+        try {      
+          let result: InvoiceUploadResponse
+          if (file.type === 'application/pdf') {
+            result = await facturaAPI.uploadInvoice(file)
+          } else {
+            result = await facturaAPI.uploadPhoto(file)
+          }
+        
+          clearInterval(progressInterval)
+          setUploadProgress(prev => ({ ...prev, [file.name]: 100 }))
+     
+          newInvoices.push(result)
+          console.log(`✅ Subido: ${result.id}`)
+     
+          // Start status polling for this invoice
+          pollInvoiceStatus(result.id)
+        
+        } catch (fileError) {
+          // Si falla el upload de este archivo específico
+          clearInterval(progressInterval)
+          setUploadProgress(prev => {
+            const newProgress = { ...prev }
+            delete newProgress[file.name]
+            return newProgress
+          })
+          console.error(`❌ Error con archivo ${file.name}:`, fileError)
+          // Continúa con el siguiente archivo
         }
-      }, 200)
-    })
+      }
+
+      setUploadedInvoices(prev => [...prev, ...newInvoices])
+   
+      if (newInvoices.length > 0) {
+        alert(`✅ ${newInvoices.length} facturas enviadas para procesamiento`)
+        // Clear uploaded files after processing
+        setUploadedFiles([])
+      }
+   
+    } catch (error) {
+      console.error('❌ Error procesando archivos:', error)
+      setProcessingError(error instanceof Error ? error.message : 'Error desconocido')
+      alert(`Error: ${error}`)
+    } finally {
+      setIsUploading(false)
+    }
+  }
+
+  // Función de polling
+  const pollInvoiceStatus = async (invoiceId: string) => {
+    const maxAttempts = 30 // 1 minuto máximo
+    let attempts = 0
+  
+    const poll = async () => {
+      try {
+        const status = await facturaAPI.getInvoiceStatus(invoiceId)
+        setInvoiceStatuses(prev => ({ ...prev, [invoiceId]: status }))
+      
+        if (status.status === 'completed' || status.status === 'failed' || attempts >= maxAttempts) {
+          return
+        }
+      
+        attempts++
+        setTimeout(poll, 2000) // Poll every 2 seconds
+      } catch (error) {
+        console.error(`Error polling status for ${invoiceId}:`, error)
+      }
+    }
+  
+    poll()
   }
 
   const handleDrag = useCallback((e: React.DragEvent) => {
@@ -287,12 +375,53 @@ export default function FacturIADashboard() {
     }).format(amount)
   }
 
-  const handleInvoiceClick = (invoice: any) => {
-    if (invoice.status === "PENDING") {
-      setSelectedInvoice(invoice)
-      setEditedProducts([...invoice.products])
-      setIsInvoiceModalOpen(true)
-      setValidationErrors({})
+  const handleInvoiceClick = async (invoice: InvoiceUploadResponse, status: InvoiceStatus) => {
+    try {
+      // Permitir clic en completed y pending
+      if (status.status === "completed" || status.status === "pending") {
+        console.log(`📄 Abriendo gestión de precios para: ${invoice.id}`)
+        
+        // Obtener los datos de precios desde la API
+        const pricingData = await facturaAPI.getPricingInfo(invoice.id)
+      
+        // Configurar el estado para el modal
+        setSelectedInvoice({
+          id: invoice.id,
+          supplier: pricingData.supplier_name,
+          status: status.status.toUpperCase(),
+          statusColor: status.status === 'completed' ? '#10B981' : '#F59E0B',
+          total: pricingData.total_cost,
+          items: pricingData.total_items,
+          products: pricingData.line_items.map(item => ({
+            code: item.product_code,
+            description: item.description,
+            quantity: item.quantity,
+            purchasePrice: item.unit_price,
+            suggestedPrice: item.sale_price || item.unit_price * 1.8, // 80% markup si no hay precio
+            finalPrice: item.sale_price || item.unit_price * 1.8
+          }))
+        })
+      
+        setEditedProducts(pricingData.line_items.map(item => ({
+          id: item.id,
+          line_item_id: item.line_item_id,
+          code: item.product_code,
+          description: item.description,
+          quantity: item.quantity,
+          purchasePrice: item.unit_price,
+          suggestedPrice: item.sale_price || item.unit_price * 1.8,
+          finalPrice: item.sale_price || item.unit_price * 1.8
+        })))
+      
+        setIsInvoiceModalOpen(true)
+        setValidationErrors({})
+      
+      } else {
+        alert(`Estado ${status.status}: Esta factura aún no está lista para gestión de precios`)
+      }
+    } catch (error) {
+      console.error('Error cargando datos de precios:', error)
+      alert('Error al cargar los datos de la factura. Intenta de nuevo.')
     }
   }
 
@@ -336,7 +465,7 @@ export default function FacturIADashboard() {
     setValidationErrors({})
   }
 
-  const handleSaveChanges = () => {
+  const handleSaveChanges = async () => {
     // Check for validation errors
     const hasErrors = Object.keys(validationErrors).length > 0
     if (hasErrors) {
@@ -344,9 +473,39 @@ export default function FacturIADashboard() {
       return
     }
 
-    // Here you would typically save to backend
-    alert("Cambios guardados exitosamente")
-    setIsInvoiceModalOpen(false)
+    if (!selectedInvoice) {
+      alert("Error: No hay factura seleccionada")
+      return
+    }
+
+    try {
+      console.log("💾 Guardando cambios en la BD...")
+    
+      // Preparar datos para enviar a la API
+      const lineItemsToUpdate = editedProducts.map((product, index) => ({
+        line_item_id: product.line_item_id || product.id, // Usar ID real del producto
+        sale_price: product.finalPrice
+      }))
+
+      console.log("📝 Datos a guardar:", lineItemsToUpdate)
+
+      // Enviar a la API REAL
+      const response = await facturaAPI.setPricing(selectedInvoice.id, lineItemsToUpdate)
+
+      console.log("✅ Respuesta de la API:", response)
+    
+      // Si todo salió bien
+      alert(`✅ Cambios guardados exitosamente en la base de datos!\n\n${lineItemsToUpdate.length} productos actualizados`)
+    
+      setIsInvoiceModalOpen(false)
+    
+      // Opcional: Refrescar el estado de la factura
+      // pollInvoiceStatus(selectedInvoice.id)
+    
+    } catch (error) {
+      console.error("❌ Error guardando en BD:", error)
+      alert(`Error al guardar: ${error}`)
+    }
   }
 
   const handleCancelChanges = () => {
@@ -354,6 +513,7 @@ export default function FacturIADashboard() {
     setEditedProducts([])
     setValidationErrors({})
   }
+
 
   return (
     <div className="flex h-screen bg-gray-50">
@@ -596,7 +756,9 @@ export default function FacturIADashboard() {
 
                           {uploadedFiles.length > 0 && !isUploading && (
                             <div className="mt-4 flex gap-2">
-                              <Button className="bg-green-600 hover:bg-green-700">
+                              <Button className="bg-green-600 hover:bg-green-700"
+                                      onClick={processFiles}
+                              >
                                 <CheckCircle className="w-4 h-4 mr-2" />
                                 Procesar Facturas ({uploadedFiles.length})
                               </Button>
@@ -605,6 +767,9 @@ export default function FacturIADashboard() {
                                 onClick={() => {
                                   setUploadedFiles([])
                                   setUploadProgress({})
+                                  setUploadedInvoices([])
+                                  setInvoiceStatuses({})
+                                  setProcessingError(null)
                                 }}
                               >
                                 Limpiar Todo
@@ -613,55 +778,96 @@ export default function FacturIADashboard() {
                           )}
                         </div>
                       )}
+                      {/* Error display */}
+                      {processingError && (
+                        <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg">
+                          <p className="text-sm text-red-600">❌ {processingError}</p>
+                        </div>
+                      )}
                     </CardContent>
                   </Card>
 
                   {/* Top Products Section */}
                 </div>
 
-                {/* Recent Invoices */}
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <FileText className="w-5 h-5" />
-                      Facturas
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="space-y-3">
-                      {recentInvoices.map((invoice, index) => (
-                        <div
-                          key={index}
-                          className={`p-4 bg-gray-50 rounded-lg transition-all duration-200 ${
-                            invoice.status === "PENDING"
-                              ? "cursor-pointer hover:bg-blue-50 hover:shadow-md"
-                              : "cursor-default"
-                          }`}
-                          onClick={() => handleInvoiceClick(invoice)}
-                        >
-                          <div className="flex items-center justify-between mb-2">
-                            <div>
-                              <p className="font-semibold text-gray-900">{invoice.id}</p>
-                              <p className="text-sm text-gray-600">{invoice.supplier}</p>
-                            </div>
-                            <Badge
-                              className="text-white text-xs px-3 py-1 font-medium"
-                              style={{ backgroundColor: invoice.statusColor }}
+                {/* Processing Status */}
+                {uploadedInvoices.length > 0 && (
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2">
+                        <FileText className="w-5 h-5" />
+                        Estado del Procesamiento ({uploadedInvoices.length})
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="space-y-3">
+                        {uploadedInvoices.map((invoice) => {
+                          const status = invoiceStatuses[invoice.id]
+                          return (
+                            <div
+                              key={invoice.id}
+                              className={`p-4 bg-gray-50 rounded-lg transition-all duration-200 ${
+                                status?.status === 'completed' || status?.status === 'PENDING'
+                                  ? "cursor-pointer hover:bg-blue-50 hover:shadow-md border border-green-200" 
+                                  : "cursor-default"
+                              }`}
+                              onClick={() => {
+                                const status = invoiceStatuses[invoice.id]
+                                if (status){
+                                  handleInvoiceClick(invoice, status)
+                                }
+                              }}
                             >
-                              {invoice.status}
-                            </Badge>
-                          </div>
-                          <div className="flex items-center justify-between text-sm text-gray-500">
-                            <span>{invoice.elapsedTime}</span>
-                            {invoice.status === "PENDING" && (
-                              <span className="text-blue-600 font-medium">Click para editar</span>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </CardContent>
-                </Card>
+                              <div className="flex items-center justify-between mb-2">
+                                <div>
+                                  <p className="font-semibold text-gray-900">{invoice.original_filename}</p>
+                                  <p className="text-sm text-gray-600">ID: {invoice.id.substring(0, 12)}...</p>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  {status ? (
+                                    <>
+                                      <Badge
+                                        className="text-white text-xs px-3 py-1 font-medium"
+                                        style={{ 
+                                          backgroundColor: status.status === 'completed' ? '#10B981' :
+                                                          status.status === 'processing' ? '#F59E0B' :
+                                                          status.status === 'failed' ? '#EF4444' : '#6B7280'
+                                        }}
+                                      >
+                                        {status.status === 'completed' ? 'COMPLETADO' :
+                                         status.status === 'processing' ? 'PROCESANDO' :
+                                         status.status === 'failed' ? 'ERROR' : status.status.toUpperCase()}
+                                      </Badge>
+                                      {status.status === 'processing' && (
+                                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
+                                      )}
+                                      {status.status === 'completed' && (
+                                        <CheckCircle className="w-4 h-4 text-green-500" />
+                                      )}
+                                    </>
+                                  ) : (
+                                    <Badge className="text-white text-xs px-3 py-1 bg-gray-500">
+                                      INICIANDO...
+                                    </Badge>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="flex items-center justify-between text-sm text-gray-500">
+                                <span>{new Date(invoice.upload_timestamp).toLocaleString('es-CO')}</span>
+                                {(status?.status === 'completed' || status?.status === 'PENDING') && (
+                                  <span className="text-blue-600 font-medium">🎉 ¡Listo para precios!</span>
+                                )}
+                                {status?.error_message && (
+                                  <span className="text-red-600 text-xs">Error: {status.error_message}</span>
+                                )}
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
               </div>
 
               {/* Timeline Dashboard */}

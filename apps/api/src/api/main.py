@@ -21,12 +21,6 @@ load_dotenv(".env")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Servir archivos estáticos del frontend
-if os.path.exists("apps/web/.next/static"):
-    app.mount("/static", StaticFiles(directory="apps/web/.next/static"), name="static")
-
-if os.path.exists("apps/web/.next/standalone"):
-    app.mount("/frontend", StaticFiles(directory="apps/web/.next/standalone"), name="frontend")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -56,10 +50,11 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://localhost:3000"],  # Configure appropriately for production
+    allow_origins=["https://localhost:3000", "http://localhost:3001", "*"],  # Configure appropriately for production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -67,6 +62,13 @@ app.add_middleware(
 
 # Include routers
 app.include_router(invoices.router, prefix="/api/v1/invoices", tags=["invoices"])
+
+# Servir archivos estáticos del frontend
+if os.path.exists("apps/web/.next/static"):
+    app.mount("/static", StaticFiles(directory="apps/web/.next/static"), name="static")
+
+if os.path.exists("apps/web/.next/standalone"):
+    app.mount("/frontend", StaticFiles(directory="apps/web/.next/standalone"), name="frontend")
 
 @app.get("/")
 async def root():
