@@ -3,18 +3,16 @@ FROM node:18-alpine as frontend-builder
 
 WORKDIR /app
 
-# Copiar archivos del frontend
-COPY ./apps/web/package*.json ./apps/web/
-RUN cd apps/web && npm install
+# Copiar todo el contexto primero
+COPY . .
 
-# Copiar código y construir
-COPY ./apps/web/ ./apps/web/
-RUN cd apps/web && npm run dev
+# Instalar y construir frontend
+RUN cd apps/web && npm install && npm run dev
 
 # Stage principal: Backend con Python
 FROM python:3.11-slim
 
-# Instala dependencias del sistema necesarias para opencv, fonts y demás
+# Instala dependencias del sistema
 RUN apt-get update && apt-get install -y \
     libgl1 \
     libglib2.0-0 \
@@ -30,18 +28,16 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Crea directorio de trabajo
 WORKDIR /app
 
-# Copia archivos del backend
-COPY ./apps/api/requirements.txt .
-COPY ./apps/api/ .
+# Copia todo el contexto
+COPY . .
 
-# Instala dependencias de Python
+# Instala dependencias de Python desde la ubicación correcta
 RUN pip install --upgrade pip
-RUN pip install -r requirements.txt
+RUN pip install -r apps/api/requirements.txt
 
 # Copia el frontend construido desde la etapa anterior
 COPY --from=frontend-builder /app/apps/web/.next ./apps/web/.next
 COPY --from=frontend-builder /app/apps/web/public ./apps/web/public
-COPY --from=frontend-builder /app/apps/web/package.json ./apps/web/
 
 # Variables de entorno
 ENV PYTHONPATH=/app
@@ -50,4 +46,4 @@ ENV PYTHONPATH=/app
 EXPOSE 8000
 
 # Comando para iniciar el servidor
-CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "apps.api.src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
