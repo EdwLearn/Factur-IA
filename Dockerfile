@@ -9,7 +9,7 @@ RUN cd apps/web && npm install
 
 # Copiar código y construir
 COPY ./apps/web/ ./apps/web/
-RUN cd apps/web && npm run build
+RUN cd apps/web && npm run dev
 
 # Stage principal: Backend con Python
 FROM python:3.11-slim
