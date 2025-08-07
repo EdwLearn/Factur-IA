@@ -6,8 +6,8 @@ WORKDIR /app
 # Copiar todo el contexto primero
 COPY . .
 
-# Instalar y construir frontend
-RUN cd apps/web && npm install && npm run dev
+# Instalar y construir frontend (usar build, no dev)
+RUN cd apps/web && npm install && npm run build
 
 # Stage principal: Backend con Python
 FROM python:3.11-slim
@@ -31,9 +31,9 @@ WORKDIR /app
 # Copia todo el contexto
 COPY . .
 
-# Instala dependencias de Python desde la ubicación correcta
+# Instala dependencias de Python desde la raíz (donde está requirements.txt)
 RUN pip install --upgrade pip
-RUN pip install -r apps/api/requirements.txt
+RUN pip install -r requirements.txt
 
 # Copia el frontend construido desde la etapa anterior
 COPY --from=frontend-builder /app/apps/web/.next ./apps/web/.next
