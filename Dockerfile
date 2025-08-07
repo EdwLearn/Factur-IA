@@ -1,15 +1,4 @@
-# Multi-stage build: Primero construir el frontend
-FROM node:18-alpine as frontend-builder
-
-WORKDIR /app
-
-# Copiar todo el contexto primero
-COPY . .
-
-# Instalar y construir frontend (usar build, no dev)
-RUN cd apps/web && npm install && npm run build
-
-# Stage principal: Backend con Python
+# Dockerfile - Solo backend, Railway maneja el frontend
 FROM python:3.11-slim
 
 # Instala dependencias del sistema
@@ -28,16 +17,12 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Crea directorio de trabajo
 WORKDIR /app
 
-# Copia todo el contexto
+# Copia todo el proyecto (incluyendo frontend ya construido)
 COPY . .
 
-# Instala dependencias de Python desde la raíz (donde está requirements.txt)
+# Instala dependencias de Python
 RUN pip install --upgrade pip
 RUN pip install -r requirements.txt
-
-# Copia el frontend construido desde la etapa anterior
-COPY --from=frontend-builder /app/apps/web/.next ./apps/web/.next
-COPY --from=frontend-builder /app/apps/web/public ./apps/web/public
 
 # Variables de entorno
 ENV PYTHONPATH=/app
