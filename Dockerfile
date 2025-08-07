@@ -4,11 +4,11 @@ FROM node:18-alpine as frontend-builder
 WORKDIR /app
 
 # Copiar archivos del frontend
-COPY apps/web/package*.json apps/web/
+COPY ./apps/web/package*.json ./apps/web/
 RUN cd apps/web && npm install
 
 # Copiar código y construir
-COPY apps/web/ apps/web/
+COPY ./apps/web/ ./apps/web/
 RUN cd apps/web && npm run build
 
 # Stage principal: Backend con Python
@@ -31,8 +31,8 @@ ENV PATH="/opt/venv/bin:$PATH"
 WORKDIR /app
 
 # Copia archivos del backend
-COPY apps/api/requirements.txt .
-COPY apps/api/ .
+COPY ./apps/api/requirements.txt .
+COPY ./apps/api/ .
 
 # Instala dependencias de Python
 RUN pip install --upgrade pip
