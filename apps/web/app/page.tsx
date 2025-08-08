@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { calculatePrice, formatPrice, useMarkupConfig } from "@/lib/simplePricing"
 import {
   Search,
   FileText,
@@ -15,6 +16,7 @@ import {
   Users,
   BarChart3,
   Settings,
+  Calculator,
   Upload,
   Camera,
   TrendingUp,
@@ -58,6 +60,7 @@ export default function FacturIADashboard() {
   const [isInvoiceModalOpen, setIsInvoiceModalOpen] = useState(false)
   const [editedProducts, setEditedProducts] = useState<any[]>([])
   const [validationErrors, setValidationErrors] = useState<{ [key: string]: string }>({})
+  const [markupPercentage, setMarkupPercentage] = useState(30)
 
   const sidebarItems = [
     { name: "Dashboard", icon: BarChart3, active: activeTab === "Dashboard" },
@@ -397,8 +400,8 @@ export default function FacturIADashboard() {
             description: item.description,
             quantity: item.quantity,
             purchasePrice: item.unit_price,
-            suggestedPrice: item.sale_price || item.unit_price * 1.8, // 80% markup si no hay precio
-            finalPrice: item.sale_price || item.unit_price * 1.8
+            suggestedPrice: item.sale_price || calculatePrice(item.unit_price, markupPercentage).finalPrice,
+            finalPrice: item.sale_price || calculatePrice(item.unit_price, markupPercentage).finalPrice
           }))
         })
       
@@ -409,8 +412,8 @@ export default function FacturIADashboard() {
           description: item.description,
           quantity: item.quantity,
           purchasePrice: item.unit_price,
-          suggestedPrice: item.sale_price || item.unit_price * 1.8,
-          finalPrice: item.sale_price || item.unit_price * 1.8
+          suggestedPrice: item.sale_price || calculatePrice(item.unit_price, markupPercentage).finalPrice,
+          finalPrice: item.sale_price || calculatePrice(item.unit_price, markupPercentage).finalPrice
         })))
       
         setIsInvoiceModalOpen(true)
@@ -453,7 +456,9 @@ export default function FacturIADashboard() {
   }
 
   const applySuggestedPrice = (index: number) => {
-    handleProductChange(index, "finalPrice", editedProducts[index].suggestedPrice)
+    const pricingResult = calculatePrice(editedProducts[index].purchasePrice, markupPercentage)
+    handleProductChange(index, "finalPrice", pricingResult.finalPrice)
+    handleProductChange(index, "suggestedPrice", pricingResult.finalPrice)
   }
 
   const applyAllSuggestedPrices = () => {
@@ -461,6 +466,19 @@ export default function FacturIADashboard() {
       ...product,
       finalPrice: product.suggestedPrice,
     }))
+    setEditedProducts(updatedProducts)
+    setValidationErrors({})
+  }
+
+  const applyMarkupToAll = () => {
+    const updatedProducts = editedProducts.map((product) => {
+      const pricingResult = calculatePrice(product.purchasePrice, markupPercentage)
+      return {
+        ...product,
+        suggestedPrice: pricingResult.finalPrice,
+        finalPrice: pricingResult.finalPrice,
+      }
+    })
     setEditedProducts(updatedProducts)
     setValidationErrors({})
   }
@@ -1085,7 +1103,10 @@ export default function FacturIADashboard() {
             </>
           )}
 
-          {activeTab === "Facturas" && <InvoiceManagementPage />}
+          {activeTab === "Facturas" && <InvoiceManagementPage 
+            uploadedInvoices={uploadedInvoices} 
+            invoiceStatuses={invoiceStatuses} 
+          />}
           {activeTab === "Inventario" && <InventoryPage />}
           {activeTab === "Proveedores" && <SupplierManagementPage />}
           {activeTab === "Reportes" && <ReportsAnalyticsPage />}
@@ -1139,9 +1160,25 @@ export default function FacturIADashboard() {
                 <div className="p-6 overflow-y-auto max-h-[60vh]">
                   <div className="flex items-center justify-between mb-4">
                     <h3 className="text-lg font-semibold text-gray-900">Productos Extraídos</h3>
-                    <Button onClick={applyAllSuggestedPrices} className="bg-blue-600 hover:bg-blue-700 text-sm">
-                      Aplicar Precios Sugeridos a Todos
-                    </Button>
+                    {/* Configuración de Markup */}
+                    <div className="flex items-center gap-3">
+                      <div className="flex items-center gap-2">
+                        <Calculator className="w-4 h-4 text-gray-600" />
+                        <label className="text-sm font-medium">Markup:</label>
+                        <Input
+                          type="number"
+                          value={markupPercentage}
+                          onChange={(e) => setMarkupPercentage(Number(e.target.value) || 30)}
+                          className="w-16 text-sm"
+                          min="0"
+                          max="200"
+                        />
+                        <span className="text-sm text-gray-500">%</span>
+                      </div>
+                      <Button onClick={applyMarkupToAll} className="bg-blue-600 hover:bg-blue-700 text-sm">
+                      Aplicar a Todos
+                      </Button>
+                    </div>
                   </div>
 
                   <div className="overflow-x-auto">

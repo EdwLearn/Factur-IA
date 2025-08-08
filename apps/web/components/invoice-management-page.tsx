@@ -1,6 +1,7 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useEffect } from "react"
+import { facturaAPI, type InvoiceData } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -8,128 +9,24 @@ import { Badge } from "@/components/ui/badge"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Search, FileText, Download, Eye, Upload, Filter, ChevronLeft, ChevronRight } from "lucide-react"
 
-interface Invoice {
+interface ApiInvoice {
   id: string
-  number: string
-  vendor: string
-  total: number
-  status: "completed" | "processing" | "pending"
-  date: string
-  description: string
+  invoice_number: string
+  supplier_name: string
+  supplier_nit: string
+  total_amount: number
+  issue_date: string
+  status: 'uploaded' | 'processing' | 'completed' | 'failed'
+  upload_timestamp: string
+  line_items?: any[]
 }
 
-const sampleInvoices: Invoice[] = [
-  {
-    id: "1",
-    number: "FAC-2024-001",
-    vendor: "Distribuidora Medellín S.A.S",
-    total: 2450000,
-    status: "completed",
-    date: "2024-01-15",
-    description: "Productos textiles y confecciones",
-  },
-  {
-    id: "2",
-    number: "FAC-2024-002",
-    vendor: "Calzado Colombia Ltda",
-    total: 1850000,
-    status: "processing",
-    date: "2024-01-14",
-    description: "Calzado deportivo y casual",
-  },
-  {
-    id: "3",
-    number: "FAC-2024-003",
-    vendor: "Accesorios y Más S.A.S",
-    total: 890000,
-    status: "pending",
-    date: "2024-01-13",
-    description: "Accesorios de moda y complementos",
-  },
-  {
-    id: "4",
-    number: "FAC-2024-004",
-    vendor: "Textiles Antioquia S.A.",
-    total: 3200000,
-    status: "completed",
-    date: "2024-01-12",
-    description: "Telas y materiales textiles",
-  },
-  {
-    id: "5",
-    number: "FAC-2024-005",
-    vendor: "Proveedora Nacional Ltda",
-    total: 1650000,
-    status: "processing",
-    date: "2024-01-11",
-    description: "Productos varios para retail",
-  },
-  {
-    id: "6",
-    number: "FAC-2024-006",
-    vendor: "Comercializadora Bogotá S.A.S",
-    total: 2100000,
-    status: "pending",
-    date: "2024-01-10",
-    description: "Mercancía general",
-  },
-  {
-    id: "7",
-    number: "FAC-2024-007",
-    vendor: "Distribuidora Medellín S.A.S",
-    total: 1750000,
-    status: "completed",
-    date: "2024-01-09",
-    description: "Productos de temporada",
-  },
-  {
-    id: "8",
-    number: "FAC-2024-008",
-    vendor: "Calzado Colombia Ltda",
-    total: 2800000,
-    status: "processing",
-    date: "2024-01-08",
-    description: "Calzado de trabajo y seguridad",
-  },
-  {
-    id: "9",
-    number: "FAC-2024-009",
-    vendor: "Accesorios y Más S.A.S",
-    total: 950000,
-    status: "completed",
-    date: "2024-01-07",
-    description: "Bisutería y accesorios",
-  },
-  {
-    id: "10",
-    number: "FAC-2024-010",
-    vendor: "Textiles Antioquia S.A.",
-    total: 4200000,
-    status: "pending",
-    date: "2024-01-06",
-    description: "Materiales premium",
-  },
-  {
-    id: "11",
-    number: "FAC-2024-011",
-    vendor: "Proveedora Nacional Ltda",
-    total: 1450000,
-    status: "completed",
-    date: "2024-01-05",
-    description: "Productos de consumo masivo",
-  },
-  {
-    id: "12",
-    number: "FAC-2024-012",
-    vendor: "Comercializadora Bogotá S.A.S",
-    total: 3100000,
-    status: "processing",
-    date: "2024-01-04",
-    description: "Productos especializados",
-  },
-]
+interface InvoiceManagementPageProps {
+  uploadedInvoices?: any[]
+  invoiceStatuses?: any
+}
 
-export function InvoiceManagementPage() {
+export function InvoiceManagementPage({ uploadedInvoices = [], invoiceStatuses = {} }: InvoiceManagementPageProps) {
   const [searchTerm, setSearchTerm] = useState("")
   const [statusFilter, setStatusFilter] = useState("all")
   const [vendorFilter, setVendorFilter] = useState("all")
@@ -137,14 +34,69 @@ export function InvoiceManagementPage() {
   const [currentPage, setCurrentPage] = useState(1)
   const itemsPerPage = 9
 
+  const [invoices, setInvoices] = useState<ApiInvoice[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    const loadInvoices = async () => {
+      try {
+        setLoading(true)
+        console.log('🔄 Cargando facturas desde API...')
+        
+        const response = await facturaAPI.listInvoices(100, 0)
+        const apiInvoices = response.invoices || []
+
+        const allInvoices = [...apiInvoices, ...uploadedInvoices.map(inv => ({
+          id: inv.id,
+          invoice_number: inv.original_filename,
+          supplier_name: 'Procesando...',
+          supplier_nit: '',
+          total_amount: 0,
+          issue_date: inv.upload_timestamp,
+          status: 'uploaded',
+          upload_timestamp: inv.upload_timestamp
+        }))]
+        
+        const mappedInvoices: ApiInvoice[] = response.invoices || []
+        setInvoices(allInvoices)
+        setError(null)
+        
+      } catch (err) {
+      // Si falla la API, usar solo las facturas subidas
+      const localInvoices = uploadedInvoices.map(inv => {
+        const currentStatus = invoiceStatuses[inv.id] || { status: 'uploaded' }
+  
+        return {
+        id: inv.id,
+        invoice_number: inv.original_filename.replace(/\.(pdf|jpg|jpeg|png)$/i, ''),
+        supplier_name: currentStatus.status === 'completed' ? 'Datos disponibles' : 'Extrayendo datos...',
+        supplier_nit: currentStatus.status === 'completed' ? 'Ver detalles' : '',
+        total_amount: 0,
+        issue_date: inv.upload_timestamp,
+        status: currentStatus.status,
+        upload_timestamp: inv.upload_timestamp,
+        original_filename: inv.original_filename
+      }
+    })
+      setInvoices(localInvoices)
+      setError(null)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+    loadInvoices()
+  }, [uploadedInvoices])
+
   const filteredInvoices = useMemo(() => {
-    const filtered = sampleInvoices.filter((invoice) => {
+    return invoices.filter((invoice) => {
       const matchesSearch =
-        invoice.number.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        invoice.vendor.toLowerCase().includes(searchTerm.toLowerCase())
+        (invoice.invoice_number || '')?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (invoice.supplier_name || '')?.toLowerCase().includes(searchTerm.toLowerCase())
 
       const matchesStatus = statusFilter === "all" || invoice.status === statusFilter
-      const matchesVendor = vendorFilter === "all" || invoice.vendor === vendorFilter
+      const matchesVendor = vendorFilter === "all" || invoice.supplier_name  === vendorFilter
 
       let matchesDate = true
       if (dateFilter !== "all") {
@@ -169,8 +121,8 @@ export function InvoiceManagementPage() {
       return matchesSearch && matchesStatus && matchesVendor && matchesDate
     })
 
-    return filtered
-  }, [searchTerm, statusFilter, vendorFilter, dateFilter])
+    return filteredInvoices
+  }, [invoices, searchTerm, statusFilter, vendorFilter, dateFilter])
 
   const totalPages = Math.ceil(filteredInvoices.length / itemsPerPage)
   const startIndex = (currentPage - 1) * itemsPerPage
@@ -185,11 +137,20 @@ export function InvoiceManagementPage() {
   }
 
   const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString("es-CO", {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    })
+    if (!dateString) return 'Fecha no disponible'
+  
+    try {
+      const date = new Date(dateString)
+      if (isNaN(date.getTime())) return 'Fecha inválida'
+    
+      return date.toLocaleDateString("es-CO", {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+      })
+    } catch {
+      return 'Fecha inválida'
+    }
   }
 
   const getStatusBadge = (status: Invoice["status"]) => {
@@ -203,25 +164,109 @@ export function InvoiceManagementPage() {
     }
   }
 
-  const vendors = [...new Set(sampleInvoices.map((invoice) => invoice.vendor))]
+  const vendors = [...new Set(invoices.map((invoice) => invoice.supplier_name).filter(Boolean))]
 
-  const handleViewDetails = (invoiceId: string) => {
-    alert(`Ver detalles de la factura ${invoiceId}`)
+  const handleViewDetails = async (invoiceId: string) => {
+    try {
+      // Verificar si la factura está completa
+      const status = invoiceStatuses[invoiceId]
+      if (status?.status !== 'completed') {
+        alert('⏳ La factura aún se está procesando. Intenta en unos momentos.')
+        return
+      }
+    
+      // Obtener datos de la factura
+      const invoiceData = await facturaAPI.getInvoiceData(invoiceId)
+      alert(`✅ Factura: ${invoiceData.invoice_number}\nProveedor: ${invoiceData.supplier?.company_name}\nTotal: ${formatCurrency(invoiceData.totals?.total || 0)}`)
+    } catch (error) {
+      alert('❌ Error al cargar los detalles de la factura')
+    }
   }
 
-  const handleDownloadPDF = (invoiceNumber: string) => {
-    alert(`Descargando PDF de la factura ${invoiceNumber}`)
+  const handleDownloadPDF = async (invoiceId: string) => {
+    try {
+      const status = invoiceStatuses[invoiceId]
+      if (status?.status !== 'completed') {
+        alert('⏳ Los datos aún se están extrayendo. Intenta en unos momentos.')
+        return
+      }
+    
+      const pricingData = await facturaAPI.getPricingInfo(invoiceId)
+      console.log('📊 Datos de la factura:', pricingData)
+      alert(`📋 Datos disponibles:\n${pricingData.total_items} productos\nTotal: ${formatCurrency(pricingData.total_cost)}`)
+    } catch (error) {
+      alert('❌ Error al obtener los datos de la factura')
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+        <span className="ml-2 text-gray-600">Cargando facturas...</span>
+      </div>
+    )
+  }
+
+  // Error state
+  if (error) {
+    return (
+      <Card>
+        <CardContent className="p-12 text-center">
+          <FileText className="w-12 h-12 text-red-400 mx-auto mb-4" />
+          <h3 className="text-lg font-medium text-gray-900 mb-2">Error cargando facturas</h3>
+          <p className="text-red-600 mb-6">{error}</p>
+          <Button onClick={() => window.location.reload()} className="bg-blue-600 hover:bg-blue-700">
+            Reintentar
+          </Button>
+        </CardContent>
+      </Card>
+    )
   }
 
   return (
     <div className="space-y-6">
       {/* Header */}
+      <Button 
+        onClick={async () => {
+          try {
+            const invoiceData = await facturaAPI.getInvoiceData('1ecf71dc-69a3-46bb-b8c9-d226b39ad823');
+            console.log('📊 Datos completos de Textract:', invoiceData);
+      
+            const pricingData = await facturaAPI.getPricingInfo('1ecf71dc-69a3-46bb-b8c9-d226b39ad823');
+            console.log('💰 Datos de precios:', pricingData);
+          } catch (err) {
+            console.error('❌ Error:', err);
+          }
+        }}
+        variant="outline"
+      >
+        🔍 Ver Datos Factura
+      </Button>
+
+
+      <Button 
+        onClick={async () => {
+          try {
+            const test = await facturaAPI.testEndpoint()
+            console.log('🧪 Test API:', test)
+      
+            const invoices = await facturaAPI.listInvoices(10, 0)
+            console.log('📋 Lista facturas:', invoices)
+          } catch (err) {
+            console.error('❌ Error test:', err)
+          }
+        }}
+        variant="outline"
+      >
+      🧪 Test API
+      </Button>
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Gestión de Facturas</h1>
           <p className="text-gray-600">Administra y procesa tus facturas de proveedores</p>
         </div>
-        <Button className="bg-blue-600 hover:bg-blue-700 w-fit">
+        <Button className="bg-blue-600 hover:bg-blue-700 w-fit" onClick={() => window.location.href = '/'}>
           <Upload className="w-4 h-4 mr-2" />
           Subir Nueva Factura
         </Button>
@@ -296,7 +341,7 @@ export function InvoiceManagementPage() {
         <div className="flex items-center gap-2">
           <Filter className="w-4 h-4 text-gray-400" />
           <span className="text-sm text-gray-600">
-            {filteredInvoices.length !== sampleInvoices.length && "Filtros aplicados"}
+            {filteredInvoices.length !== invoices.length && "Filtros aplicados"}
           </span>
         </div>
       </div>
@@ -308,7 +353,9 @@ export function InvoiceManagementPage() {
             <CardHeader className="pb-3">
               <div className="flex items-start justify-between">
                 <div>
-                  <CardTitle className="text-lg font-semibold text-gray-900 mb-1">{invoice.number}</CardTitle>
+                  <CardTitle className="text-lg font-semibold text-gray-900 mb-1">
+                    {invoice.invoice_number || invoice.original_filename || `ID: ${invoice.id.substring(0, 8)}...`}
+                  </CardTitle>
                   <p className="text-sm text-gray-600">{formatDate(invoice.date)}</p>
                 </div>
                 {getStatusBadge(invoice.status)}
@@ -318,18 +365,26 @@ export function InvoiceManagementPage() {
               <div className="space-y-3">
                 <div>
                   <p className="text-sm font-medium text-gray-700 mb-1">Proveedor</p>
-                  <p className="text-sm text-gray-900">{invoice.vendor}</p>
+                  <p className="text-sm text-gray-900">
+                    {invoice.supplier_name || 'Extrayendo datos...'}
+                  </p>
                 </div>
 
                 <div>
-                  <p className="text-sm font-medium text-gray-700 mb-1">Descripción</p>
-                  <p className="text-sm text-gray-600 line-clamp-2">{invoice.description}</p>
+                  <p className="text-sm font-medium text-gray-700 mb-1">Estado</p>
+                  <p className="text-sm text-gray-600">
+                    {invoice.status === 'completed' ? 'Datos extraídos' : 'Procesando datos...'}
+                  </p>
                 </div>
 
                 <div className="pt-2 border-t border-gray-100">
                   <div className="flex items-center justify-between mb-4">
                     <span className="text-sm font-medium text-gray-700">Total</span>
-                    <span className="text-lg font-bold text-gray-900">{formatCurrency(invoice.total)}</span>
+                    <span className="text-lg font-bold text-gray-900">
+                      {invoice.total_amount && invoice.total_amount > 0
+                      ? formatCurrency(invoice.total_amount)
+                      : 'Procesando...'}
+                    </span>
                   </div>
 
                   <div className="flex gap-2">
