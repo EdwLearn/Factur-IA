@@ -1,44 +1,39 @@
 version: '3.8'
 
 services:
-  # PostgreSQL Database
   postgres:
     image: postgres:15
     container_name: document_processing_db
     environment:
-      POSTGRES_DB: document_processing
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
     ports:
-      - "5432:5432"
+      - "${DB_PORT}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./apps/api/src/database/init.sql:/docker-entrypoint-initdb.d/init.sql
-    networks:
-      - document_processing
+    networks: [document_processing]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 10s
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
 
-  # Redis for caching
   redis:
     image: redis:7-alpine
     container_name: document_processing_redis
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT}:6379"
     volumes:
       - redis_data:/data
-    networks:
-      - document_processing
+    networks: [document_processing]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
-  # LocalStack for simulating AWS services
+  # Opcional, útil para S3 en dev
   localstack:
     image: localstack/localstack:latest
     container_name: document_processing_localstack
@@ -46,43 +41,75 @@ services:
       - "4566:4566"
       - "4571:4571"
     environment:
-      - SERVICES=s3,lambda,stepfunctions,iam,logs,events
-      - DEBUG=1
-      - DATA_DIR=/tmp/localstack/data
-      - DOCKER_HOST=unix:///var/run/docker.sock
+      SERVICES: s3,iam,logs,events
+      DEBUG: "1"
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: ${AWS_REGION}
+      DATA_DIR: /tmp/localstack/data
+      DOCKER_HOST: unix:///var/run/docker.sock
     volumes:
       - "./scripts/localstack:/etc/localstack/init/ready.d"
       - "/var/run/docker.sock:/var/run/docker.sock"
       - localstack_data:/tmp/localstack
-    networks:
-      - document_processing
+    networks: [document_processing]
+    healthcheck:
+      test: ["CMD-SHELL", "awslocal s3 ls || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
-  # API Development
   api:
     build:
       context: .
-      dockerfile: Dockerfile.dev
+      dockerfile: Dockerfile
     container_name: document_processing_api
-    ports:
-      - "8000:8000"
+    env_file: [.env]
     environment:
-      - ENVIRONMENT=development
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_USER=postgres
-      - DB_PASSWORD=postgres
-      - DB_NAME=document_processing
-      - REDIS_HOST=redis
-    volumes:
-      - .:/app
-      - .env
+      # Garantizamos hostnames de servicios en docker
+      DB_HOST: postgres
+      DB_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # Si usas LocalStack en dev:
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_REGION: ${AWS_REGION}
+    ports:
+      - "${API_PORT}:8000"
     depends_on:
-      postgres:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      localstack:
         condition: service_healthy
-      redis:
+    networks: [document_processing]
+    # Para desarrollo con recarga en caliente, descomenta:
+    # command: sh -c "alembic upgrade head && uvicorn apps.api.src.api.main:app --host 0.0.0.0 --port 8000 --reload"
+    # Si prefieres usar el CMD del Dockerfile y entrypoint, no pongas 'command' aquí.
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: document_processing_worker
+    env_file: [.env]
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_REGION: ${AWS_REGION}
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      localstack:
         condition: service_healthy
-    networks:
-      - document_processing
+    networks: [document_processing]
+    command: python -m apps.api.src.worker.run_rq
 
 volumes:
   postgres_data:

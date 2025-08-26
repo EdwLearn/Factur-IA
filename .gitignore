@@ -4,7 +4,7 @@ __pycache__/
 *$py.class
 *.so
 .Python
-build/
+#build/
 develop-eggs/
 dist/
 downloads/
@@ -48,21 +48,21 @@ logs/
 *.sqlite3
 
 # AWS Credentials
-.aws/
-credentials
+#.aws/
+#credentials
 
 # Local development
-.env.local
-.env.development
-.env.test
+#.env.local
+#.env.development
+#.env.test
 
 # Testing
-.coverage
-.pytest_cache/
-htmlcov/
+#.coverage
+#.pytest_cache/
+#htmlcov/
 
 # Docker
-.dockerignore
+#.dockerignore
 
 # Temporary files
 tmp/

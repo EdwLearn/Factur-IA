@@ -380,20 +380,34 @@ export default function FacturIADashboard() {
 
   const handleInvoiceClick = async (invoice: InvoiceUploadResponse, status: InvoiceStatus) => {
     try {
-      // Permitir clic en completed y pending
       if (status.status === "completed" || status.status === "pending") {
         console.log(`📄 Abriendo gestión de precios para: ${invoice.id}`)
-        
-        // Obtener los datos de precios desde la API
+  
+        // 1) Trae pricing como siempre
         const pricingData = await facturaAPI.getPricingInfo(invoice.id)
-      
-        // Configurar el estado para el modal
+  
+        // 2) CALCULAR TOTAL CON FALLBACK
+        let total = Number(pricingData?.total_cost ?? 0)
+  
+        // si parece un conteo de items o viene vacío, intenta con Textract
+        if (!total || total < 1000) {
+          try {
+            const invoiceData = await facturaAPI.getInvoiceData(invoice.id)
+            if (invoiceData?.totals?.total) {
+              total = Number(invoiceData.totals.total)
+            }
+          } catch {
+            // no hacemos nada: nos quedamos con el total que haya
+          }
+        }
+  
+        // 3) Configurar el estado para el modal usando "total" (el confiable)
         setSelectedInvoice({
           id: invoice.id,
           supplier: pricingData.supplier_name,
           status: status.status.toUpperCase(),
           statusColor: status.status === 'completed' ? '#10B981' : '#F59E0B',
-          total: pricingData.total_cost,
+          total,                                    // <-- aquí ya no usamos pricingData.total_cost directo
           items: pricingData.total_items,
           products: pricingData.line_items.map(item => ({
             code: item.product_code,
@@ -404,7 +418,7 @@ export default function FacturIADashboard() {
             finalPrice: item.sale_price || calculatePrice(item.unit_price, markupPercentage).finalPrice
           }))
         })
-      
+  
         setEditedProducts(pricingData.line_items.map(item => ({
           id: item.id,
           line_item_id: item.line_item_id,
@@ -415,10 +429,9 @@ export default function FacturIADashboard() {
           suggestedPrice: item.sale_price || calculatePrice(item.unit_price, markupPercentage).finalPrice,
           finalPrice: item.sale_price || calculatePrice(item.unit_price, markupPercentage).finalPrice
         })))
-      
+  
         setIsInvoiceModalOpen(true)
         setValidationErrors({})
-      
       } else {
         alert(`Estado ${status.status}: Esta factura aún no está lista para gestión de precios`)
       }
@@ -427,6 +440,7 @@ export default function FacturIADashboard() {
       alert('Error al cargar los datos de la factura. Intenta de nuevo.')
     }
   }
+  
 
   const handleProductChange = (index: number, field: string, value: string | number) => {
     const updatedProducts = [...editedProducts]
@@ -1106,6 +1120,7 @@ export default function FacturIADashboard() {
           {activeTab === "Facturas" && <InvoiceManagementPage 
             uploadedInvoices={uploadedInvoices} 
             invoiceStatuses={invoiceStatuses} 
+            setActiveTab={setActiveTab}
           />}
           {activeTab === "Inventario" && <InventoryPage />}
           {activeTab === "Proveedores" && <SupplierManagementPage />}

@@ -15,7 +15,7 @@ RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 # Crea directorio de trabajo
-WORKDIR /app
+WORKDIR /code
 
 # Copia todo el proyecto (incluyendo frontend ya construido)
 COPY . .
@@ -30,5 +30,9 @@ ENV PYTHONPATH=/app
 # Expone el puerto
 EXPOSE 8000
 
+COPY scripts/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
+
 # Comando para iniciar el servidor
-CMD ["uvicorn", "apps.api.src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "uvicorn apps.api.src.api.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

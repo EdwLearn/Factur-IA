@@ -10,7 +10,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Search, FileText, Download, Eye, Upload, Filter, ChevronLeft, ChevronRight } from "lucide-react"
 
 interface ApiInvoice {
-  id: string
+  id: string | null
+  invoice_id?: string
   invoice_number: string
   supplier_name: string
   supplier_nit: string
@@ -18,15 +19,17 @@ interface ApiInvoice {
   issue_date: string
   status: 'uploaded' | 'processing' | 'completed' | 'failed'
   upload_timestamp: string
+  original_filename?: string
   line_items?: any[]
 }
 
 interface InvoiceManagementPageProps {
   uploadedInvoices?: any[]
   invoiceStatuses?: any
+  setActiveTab?: (tab: string) => void
 }
 
-export function InvoiceManagementPage({ uploadedInvoices = [], invoiceStatuses = {} }: InvoiceManagementPageProps) {
+export function InvoiceManagementPage({ uploadedInvoices = [], invoiceStatuses = {}, setActiveTab }: InvoiceManagementPageProps) {
   const [searchTerm, setSearchTerm] = useState("")
   const [statusFilter, setStatusFilter] = useState("all")
   const [vendorFilter, setVendorFilter] = useState("all")
@@ -45,62 +48,47 @@ export function InvoiceManagementPage({ uploadedInvoices = [], invoiceStatuses =
         console.log('🔄 Cargando facturas desde API...')
         
         const response = await facturaAPI.listInvoices(100, 0)
-        const apiInvoices = response.invoices || []
-
-        const allInvoices = [...apiInvoices, ...uploadedInvoices.map(inv => ({
-          id: inv.id,
-          invoice_number: inv.original_filename,
-          supplier_name: 'Procesando...',
-          supplier_nit: '',
-          total_amount: 0,
-          issue_date: inv.upload_timestamp,
-          status: 'uploaded',
-          upload_timestamp: inv.upload_timestamp
-        }))]
+        console.log('📊 Respuesta completa:', response)
         
-        const mappedInvoices: ApiInvoice[] = response.invoices || []
-        setInvoices(allInvoices)
+        // Verificar estructura de respuesta
+        if (response && typeof response === 'object' && response.invoices) {
+          console.log('✅ Facturas encontradas:', response.invoices.length)
+          setInvoices(response.invoices)
+        } else if (Array.isArray(response)) {
+          console.log('✅ Respuesta es array:', response.length)
+          setInvoices(response)
+        } else {
+          console.log('⚠️ Estructura de respuesta inesperada:', typeof response)
+          setInvoices([])
+        }
+        
         setError(null)
         
       } catch (err) {
-      // Si falla la API, usar solo las facturas subidas
-      const localInvoices = uploadedInvoices.map(inv => {
-        const currentStatus = invoiceStatuses[inv.id] || { status: 'uploaded' }
-  
-        return {
-        id: inv.id,
-        invoice_number: inv.original_filename.replace(/\.(pdf|jpg|jpeg|png)$/i, ''),
-        supplier_name: currentStatus.status === 'completed' ? 'Datos disponibles' : 'Extrayendo datos...',
-        supplier_nit: currentStatus.status === 'completed' ? 'Ver detalles' : '',
-        total_amount: 0,
-        issue_date: inv.upload_timestamp,
-        status: currentStatus.status,
-        upload_timestamp: inv.upload_timestamp,
-        original_filename: inv.original_filename
+        console.error('❌ Error cargando facturas:', err)
+        setError(err instanceof Error ? err.message : 'Error desconocido')
+        setInvoices([])
+      } finally {
+        setLoading(false)
       }
-    })
-      setInvoices(localInvoices)
-      setError(null)
-    } finally {
-      setLoading(false)
     }
-  }
-
+  
     loadInvoices()
   }, [uploadedInvoices])
 
   const filteredInvoices = useMemo(() => {
-    return invoices.filter((invoice) => {
+    const normalizedStatusFilter = statusFilter
+    const result = invoices.filter((invoice) => {
       const matchesSearch =
         (invoice.invoice_number || '')?.toLowerCase().includes(searchTerm.toLowerCase()) ||
         (invoice.supplier_name || '')?.toLowerCase().includes(searchTerm.toLowerCase())
 
-      const matchesStatus = statusFilter === "all" || invoice.status === statusFilter
-      const matchesVendor = vendorFilter === "all" || invoice.supplier_name  === vendorFilter
+      const matchesStatus = normalizedStatusFilter === "all" || invoice.status === normalizedStatusFilter
+      const matchesVendor = vendorFilter === "all" || invoice.supplier_name === vendorFilter
 
       let matchesDate = true
       if (dateFilter !== "all") {
-        const invoiceDate = new Date(invoice.date)
+        const invoiceDate = new Date(invoice.issue_date || invoice.upload_timestamp)
         const now = new Date()
         const diffTime = now.getTime() - invoiceDate.getTime()
         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
@@ -121,7 +109,7 @@ export function InvoiceManagementPage({ uploadedInvoices = [], invoiceStatuses =
       return matchesSearch && matchesStatus && matchesVendor && matchesDate
     })
 
-    return filteredInvoices
+    return result
   }, [invoices, searchTerm, statusFilter, vendorFilter, dateFilter])
 
   const totalPages = Math.ceil(filteredInvoices.length / itemsPerPage)
@@ -141,7 +129,7 @@ export function InvoiceManagementPage({ uploadedInvoices = [], invoiceStatuses =
   
     try {
       const date = new Date(dateString)
-      if (isNaN(date.getTime())) return 'Fecha inválida'
+      if (isNaN(date.getTime())) return 'Fecha no disponible'
     
       return date.toLocaleDateString("es-CO", {
         year: "numeric",
@@ -153,14 +141,18 @@ export function InvoiceManagementPage({ uploadedInvoices = [], invoiceStatuses =
     }
   }
 
-  const getStatusBadge = (status: Invoice["status"]) => {
+  const getStatusBadge = (status: ApiInvoice["status"]) => {
     switch (status) {
       case "completed":
         return <Badge className="bg-green-100 text-green-800 hover:bg-green-100 font-medium">Completada</Badge>
       case "processing":
         return <Badge className="bg-yellow-100 text-yellow-800 hover:bg-yellow-100 font-medium">Procesando</Badge>
-      case "pending":
-        return <Badge className="bg-blue-100 text-blue-800 hover:bg-blue-100 font-medium">Pendiente</Badge>
+      case "uploaded":
+        return <Badge className="bg-blue-100 text-blue-800 hover:bg-blue-100 font-medium">Subida</Badge>
+      case "failed":
+        return <Badge className="bg-red-100 text-red-800 hover:bg-red-100 font-medium">Error</Badge>
+      default:
+        return null
     }
   }
 
@@ -227,46 +219,13 @@ export function InvoiceManagementPage({ uploadedInvoices = [], invoiceStatuses =
   return (
     <div className="space-y-6">
       {/* Header */}
-      <Button 
-        onClick={async () => {
-          try {
-            const invoiceData = await facturaAPI.getInvoiceData('1ecf71dc-69a3-46bb-b8c9-d226b39ad823');
-            console.log('📊 Datos completos de Textract:', invoiceData);
-      
-            const pricingData = await facturaAPI.getPricingInfo('1ecf71dc-69a3-46bb-b8c9-d226b39ad823');
-            console.log('💰 Datos de precios:', pricingData);
-          } catch (err) {
-            console.error('❌ Error:', err);
-          }
-        }}
-        variant="outline"
-      >
-        🔍 Ver Datos Factura
-      </Button>
-
-
-      <Button 
-        onClick={async () => {
-          try {
-            const test = await facturaAPI.testEndpoint()
-            console.log('🧪 Test API:', test)
-      
-            const invoices = await facturaAPI.listInvoices(10, 0)
-            console.log('📋 Lista facturas:', invoices)
-          } catch (err) {
-            console.error('❌ Error test:', err)
-          }
-        }}
-        variant="outline"
-      >
-      🧪 Test API
-      </Button>
+    
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Gestión de Facturas</h1>
           <p className="text-gray-600">Administra y procesa tus facturas de proveedores</p>
         </div>
-        <Button className="bg-blue-600 hover:bg-blue-700 w-fit" onClick={() => window.location.href = '/'}>
+        <Button className="bg-blue-600 hover:bg-blue-700 w-fit" onClick={() => setActiveTab?.('Dashboard')}>
           <Upload className="w-4 h-4 mr-2" />
           Subir Nueva Factura
         </Button>
@@ -299,7 +258,8 @@ export function InvoiceManagementPage({ uploadedInvoices = [], invoiceStatuses =
                   <SelectItem value="all">Todos los estados</SelectItem>
                   <SelectItem value="completed">Completada</SelectItem>
                   <SelectItem value="processing">Procesando</SelectItem>
-                  <SelectItem value="pending">Pendiente</SelectItem>
+                  <SelectItem value="uploaded">Subida</SelectItem>
+                  <SelectItem value="failed">Error</SelectItem>
                 </SelectContent>
               </Select>
 
@@ -348,70 +308,79 @@ export function InvoiceManagementPage({ uploadedInvoices = [], invoiceStatuses =
 
       {/* Invoice Cards Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {paginatedInvoices.map((invoice) => (
-          <Card key={invoice.id} className="hover:shadow-lg transition-shadow duration-200">
-            <CardHeader className="pb-3">
-              <div className="flex items-start justify-between">
-                <div>
-                  <CardTitle className="text-lg font-semibold text-gray-900 mb-1">
-                    {invoice.invoice_number || invoice.original_filename || `ID: ${invoice.id.substring(0, 8)}...`}
-                  </CardTitle>
-                  <p className="text-sm text-gray-600">{formatDate(invoice.date)}</p>
-                </div>
-                {getStatusBadge(invoice.status)}
-              </div>
-            </CardHeader>
-            <CardContent className="pt-0">
-              <div className="space-y-3">
-                <div>
-                  <p className="text-sm font-medium text-gray-700 mb-1">Proveedor</p>
-                  <p className="text-sm text-gray-900">
-                    {invoice.supplier_name || 'Extrayendo datos...'}
-                  </p>
-                </div>
+        {paginatedInvoices.map((invoice, idx) => {
+          const key =
+            (invoice.id && String(invoice.id)) ||
+            invoice.invoice_number ||
+            invoice.original_filename ||
+            `${invoice.upload_timestamp}-${idx}`
 
-                <div>
-                  <p className="text-sm font-medium text-gray-700 mb-1">Estado</p>
-                  <p className="text-sm text-gray-600">
-                    {invoice.status === 'completed' ? 'Datos extraídos' : 'Procesando datos...'}
-                  </p>
+          return (
+            <Card key={key} className="hover:shadow-lg transition-shadow duration-200">
+              <CardHeader className="pb-3">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <CardTitle className="text-lg font-semibold text-gray-900 mb-1">
+                      {invoice.invoice_number 
+                      || invoice.original_filename 
+                      || (invoice.id ? `ID: ${String(invoice.id).slice(0, 8)}...` : 'Factura')}
+                    </CardTitle>
+                    <p className="text-sm text-gray-600">{formatDate(invoice.issue_date || invoice.upload_timestamp)}</p>
+                  </div>
+                  {getStatusBadge(invoice.status)}
                 </div>
-
-                <div className="pt-2 border-t border-gray-100">
-                  <div className="flex items-center justify-between mb-4">
-                    <span className="text-sm font-medium text-gray-700">Total</span>
-                    <span className="text-lg font-bold text-gray-900">
-                      {invoice.total_amount && invoice.total_amount > 0
-                      ? formatCurrency(invoice.total_amount)
-                      : 'Procesando...'}
-                    </span>
+              </CardHeader>
+              <CardContent className="pt-0">
+                <div className="space-y-3">
+                  <div>
+                    <p className="text-sm font-medium text-gray-700 mb-1">Proveedor</p>
+                    <p className="text-sm text-gray-900">
+                      {invoice.supplier_name || 'Proveedor no disponible'}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-gray-700 mb-1">Estado</p>
+                    <p className="text-sm text-gray-600">
+                      {invoice.status === 'completed' ? 'Datos extraídos' : 'Procesando datos...'}
+                    </p>
                   </div>
 
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="flex-1 text-blue-600 border-blue-200 hover:bg-blue-50 bg-transparent"
-                      onClick={() => handleViewDetails(invoice.id)}
-                    >
-                      <Eye className="w-4 h-4 mr-1" />
-                      Ver Detalles
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="flex-1 text-gray-600 hover:bg-gray-50 bg-transparent"
-                      onClick={() => handleDownloadPDF(invoice.number)}
-                    >
-                      <Download className="w-4 h-4 mr-1" />
-                      PDF
-                    </Button>
+                  <div className="pt-2 border-t border-gray-100">
+                    <div className="flex items-center justify-between mb-4">
+                      <span className="text-sm font-medium text-gray-700">Total</span>
+                      <span className="text-lg font-bold text-gray-900">
+                        {invoice.total_amount > 0 
+                        ? formatCurrency(Number(invoice.total_amount)) 
+                        : 'No disponible'}
+                      </span>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex-1 text-blue-600 border-blue-200 hover:bg-blue-50 bg-transparent"
+                        onClick={() => (invoice.id ? handleViewDetails(String(invoice.id)) : alert('Factura sin ID'))}
+                      >
+                        <Eye className="w-4 h-4 mr-1" />
+                        Ver Detalles
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex-1 text-gray-600 hover:bg-gray-50 bg-transparent"
+                        onClick={() => (invoice.id ? handleDownloadPDF(String(invoice.id)) : alert('Factura sin ID'))}
+                      >
+                        <Download className="w-4 h-4 mr-1" />
+                        PDF
+                      </Button>
+                    </div>
                   </div>
                 </div>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
+              </CardContent>
+            </Card>
+          )
+        })}
       </div>
 
       {/* Empty State */}

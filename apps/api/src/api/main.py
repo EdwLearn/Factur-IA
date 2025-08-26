@@ -21,6 +21,11 @@ load_dotenv(".env")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+app = FastAPI()
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
