@@ -3,26 +3,20 @@ from logging.config import fileConfig
 from sqlalchemy import engine_from_config, pool
 from alembic import context
 
-# 🔽 IMPORTA TU Base (ajusta la ruta exacta)
-# Ejemplos comunes:
-# from app.database.models import Base
-# from app.models import Base
-from app.models import Base  # <-- CAMBIA esta línea a donde tengas "Base = declarative_base()"
+from apps.api.src.database.models import Base
 
 config = context.config
-if config.config_file_name is not None:
+if config.config_file_name:
     fileConfig(config.config_file_name)
 
-# Usa variables de entorno (DATABASE_URL o los DB_*)
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
-    DB_USER = os.getenv("POSTGRES_USER", os.getenv("DB_USER", "postgres"))
-    DB_PASSWORD = os.getenv("POSTGRES_PASSWORD", os.getenv("DB_PASSWORD", "postgres"))
+    DB_USER = os.getenv("DB_USER", "postgres")
+    DB_PASSWORD = os.getenv("DB_PASSWORD", "postgres")
     DB_HOST = os.getenv("DB_HOST", "postgres")
     DB_PORT = os.getenv("DB_PORT", "5432")
-    DB_NAME = os.getenv("POSTGRES_DB", os.getenv("DB_NAME", "document_processing"))
+    DB_NAME = os.getenv("DB_NAME", "document_processing")
     DATABASE_URL = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-
 config.set_main_option("sqlalchemy.url", DATABASE_URL)
 
 target_metadata = Base.metadata
