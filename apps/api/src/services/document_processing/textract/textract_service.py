@@ -350,12 +350,59 @@ class TextractService:
         'impuesto', 'imp', 'tax', 'tasa', '% iva',
     }
 
+    # Map of invoice field → keywords that identify that column in a header row.
+    # ORDER MATTERS: checked top-to-bottom per cell; first match wins.
+    # 'item' removed from description — it's almost always a row-number column.
+    _COLUMN_KEYWORD_MAP = {
+        'description': {
+            'descripcion', 'descripción', 'description', 'detalle',
+            'producto', 'articulo', 'artículo', 'concepto',
+        },
+        'quantity': {
+            'cantidad', 'cant', 'qty', 'quantity',
+        },
+        'unit_price': {
+            # explicit price keywords
+            'precio', 'price',
+            # "valor/vr/vlr + unit*" — catches "Mr. Unitario", "Vlr. Unitario", etc.
+            'unitario', 'valor unit', 'vr unit', 'vlr unit',
+            'vr. unit', 'p. unit', 'precio unit',
+            # bare "valor" when NOT followed by "total" is usually unit price
+            'mr. unit', 'mr unit',
+        },
+        'total': {
+            'total', 'valor total', 'subtotal', 'importe', 'vr total',
+            'vlr total',
+        },
+        'unit_measure': {
+            'u/m', 'unidad', 'um', 'medida',
+            # 'unit' removed — too broad, matched 'unitario' before unit_price could
+        },
+    }
+
     def _detect_iva_column(self, header_row: List[str]) -> Optional[int]:
         """Return the column index of the IVA/tarifa column, or None."""
         for idx, cell in enumerate(header_row):
             if str(cell).strip().lower() in self._IVA_HEADER_ALIASES:
                 return idx
         return None
+
+    def _detect_column_mapping(self, header_row: List[str]) -> Dict[str, int]:
+        """
+        Read the header row and return {field: col_index} using partial keyword
+        matching (containment). First match per field wins.
+        """
+        logger.info(f"header_row recibido: {header_row}")
+        mapping: Dict[str, int] = {}
+        for col_idx, cell in enumerate(header_row):
+            cell_lower = str(cell).strip().lower()
+            for field, keywords in self._COLUMN_KEYWORD_MAP.items():
+                if field not in mapping:
+                    if any(kw in cell_lower for kw in keywords):
+                        mapping[field] = col_idx
+                        break
+        logger.info(f"col_mapping detectado: {mapping}")
+        return mapping
 
     def _detect_iva_from_text(self, text: str) -> Optional[Decimal]:
         """
@@ -385,30 +432,73 @@ class TextractService:
 
     def _find_product_table(self, tables: List[Dict]) -> Optional[Dict]:
         """
-        Return the table whose first row contains the most product-header keywords.
-        Falls back to the largest table if no header row matches.
+        Select the table that most likely contains invoice line items using
+        multi-factor scoring:
+          1. Header keywords (partial match)
+          2. Row count bonus
+          3. Presence of long-text cells (description column)
+          4. Presence of numeric cells (price/quantity columns)
+        Falls back to the largest table if no table scores above 0.
         """
         best_table = None
         best_score = 0
 
         for table in tables:
-            if not table.get('rows'):
-                continue
+            if not table.get('rows') or table['row_count'] < 2:
+                continue  # empty or single-row table → skip
+
+            score = 0
             header_row = table['rows'][0]
-            score = sum(
-                1 for cell in header_row
-                if str(cell).strip().lower() in self._PRODUCT_HEADER_KEYWORDS
+
+            # 1. Keywords in header — partial match (containment)
+            for cell in header_row:
+                cell_lower = str(cell).strip().lower()
+                if any(kw in cell_lower for kw in self._PRODUCT_HEADER_KEYWORDS):
+                    score += 1
+
+            # 2. Row count bonus
+            if table['row_count'] > 3:
+                score += 2
+            elif table['row_count'] > 2:
+                score += 1
+
+            # 3. Long-text cells in data rows → likely a description column
+            has_long_text = any(
+                len(str(cell).strip()) > 15
+                for row in table['rows'][1:]
+                for cell in row
             )
+            if has_long_text:
+                score += 2
+
+            # 4. Numeric cells in data rows → price / quantity columns
+            numeric_count = sum(
+                1 for row in table['rows'][1:]
+                for cell in row
+                if self._is_numeric(str(cell).strip()) and str(cell).strip()
+            )
+            if numeric_count >= 3:
+                score += 2
+            elif numeric_count >= 1:
+                score += 1
+
+            logger.debug(
+                f"Table candidate: score={score} rows={table['row_count']} "
+                f"cols={table['col_count']} header={header_row}"
+            )
+
             if score > best_score:
                 best_score = score
                 best_table = table
 
-        if best_score >= 2:
-            logger.info(f"✅ Product table found by header (score={best_score})")
+        if best_table:
+            logger.info(
+                f"✅ Product table selected (score={best_score}, "
+                f"rows={best_table['row_count']}, cols={best_table['col_count']})"
+            )
             return best_table
 
-        # Fallback: largest table
-        logger.warning("⚠️ No product table header found — using largest table as fallback")
+        logger.warning("⚠️ No product table found — fallback to largest table")
         return max(tables, key=lambda t: t['row_count']) if tables else None
 
     def _extract_line_items(self, tables: List[Dict], lines: List[str]) -> List[Dict]:
@@ -420,7 +510,9 @@ class TextractService:
             if not main_table:
                 main_table = max(tables, key=lambda t: t['row_count'])
             header_row = main_table['rows'][0] if main_table['rows'] else []
+            logger.info(f"RAW TABLE ROWS: {main_table['rows'][:3]}")
             iva_col_idx = self._detect_iva_column(header_row)
+            col_mapping = self._detect_column_mapping(header_row)
 
             for i, row in enumerate(main_table['rows']):
                 if i == 0:  # Skip header row
@@ -428,7 +520,7 @@ class TextractService:
 
                 if len(row) >= 3:
                     try:
-                        item = self._parse_colombian_invoice_line(row, i, iva_col_idx)
+                        item = self._parse_colombian_invoice_line(row, i, iva_col_idx, col_mapping)
                         if item.get('description') and item.get('quantity') and item.get('unit_price'):
                             line_items.append(item)
                     except Exception as e:
@@ -713,12 +805,21 @@ class TextractService:
         return 'UND'
     
     def _parse_colombian_invoice_line(
-        self, row: List[str], row_index: int, iva_col_idx: Optional[int] = None
+        self,
+        row: List[str],
+        row_index: int,
+        iva_col_idx: Optional[int] = None,
+        col_mapping: Optional[Dict[str, int]] = None,
     ) -> Dict:
         """
         Parse Colombian invoice line with proper field detection.
         Handles: ITEM, REF, DESCRIPTION, QTY, UNIT, IVA%, PRICE, SUBTOTAL
 
+        col_mapping: {field: col_index} detected from the header row via
+                     _detect_column_mapping(). When provided, quantity and
+                     unit_price are read from the known column indices instead
+                     of being inferred positionally — this fixes the
+                     Precio/Cantidad column-order bug.
         iva_col_idx: column index of the IVA column detected from the header row.
         """
         clean_row = [str(cell).strip() for cell in row if cell is not None]
@@ -732,7 +833,51 @@ class TextractService:
         if iva_col_idx is not None and iva_col_idx < len(clean_row):
             iva_rate = self._detect_iva_from_text(clean_row[iva_col_idx])
 
-        # Numeric indices (excluding the IVA column so it doesn't confuse positional logic)
+        # --- BUG 1 FIX: use header-detected column mapping when available ---
+        # If unit_price wasn't detected by keyword but we know quantity and total,
+        # infer price as the first numeric column between quantity and total.
+        if col_mapping and 'quantity' in col_mapping and 'unit_price' not in col_mapping:
+            qty_idx_hint   = col_mapping['quantity']
+            total_idx_hint = col_mapping.get('total', len(clean_row) - 1)
+            for candidate in range(qty_idx_hint + 1, total_idx_hint):
+                if candidate < len(clean_row) and self._is_numeric(clean_row[candidate]):
+                    col_mapping = dict(col_mapping)  # don't mutate the shared dict
+                    col_mapping['unit_price'] = candidate
+                    logger.info(f"unit_price inferred at col {candidate} between qty and total")
+                    break
+
+        if (
+            col_mapping
+            and 'quantity' in col_mapping
+            and 'unit_price' in col_mapping
+        ):
+            qty_idx      = col_mapping['quantity']
+            price_idx    = col_mapping['unit_price']
+            subtotal_idx = col_mapping.get('total', len(clean_row) - 1)
+            desc_idx     = col_mapping.get('description', 0)
+
+            # Guard against out-of-range indices
+            if qty_idx < len(clean_row) and price_idx < len(clean_row):
+                description = str(clean_row[desc_idx]).strip() if desc_idx < len(clean_row) else ''
+                unit = self._detect_unit_from_text(description)
+                if iva_rate is None:
+                    iva_rate = self._detect_iva_from_text(description)
+
+                raw_reference = clean_row[0] if clean_row else None
+                return {
+                    'item_number':  row_index,
+                    'product_code': self._extract_product_code(description),
+                    'description':  description,
+                    'reference':    self._clean_reference(raw_reference),
+                    'unit_measure': unit,
+                    'quantity':     self._parse_decimal(clean_row[qty_idx]),
+                    'unit_price':   self._parse_decimal(clean_row[price_idx]),
+                    'subtotal':     self._parse_decimal(clean_row[subtotal_idx]) if subtotal_idx < len(clean_row) else None,
+                    'iva_rate':     iva_rate,
+                }
+
+        # --- Fallback: positional logic (numeric column detection) ---
+        # Numeric indices excluding the IVA column
         numeric_indices = []
         for idx, cell in enumerate(clean_row):
             if idx == iva_col_idx:
@@ -741,12 +886,27 @@ class TextractService:
                 numeric_indices.append(idx)
 
         if len(numeric_indices) >= 3:
-            qty_idx      = numeric_indices[-3]
-            price_idx    = numeric_indices[-2]
+            idx_a        = numeric_indices[-3]
+            idx_b        = numeric_indices[-2]
             subtotal_idx = numeric_indices[-1]
 
+            # Heuristic: unit price >> quantity in Colombian invoices.
+            # Compare magnitudes so we handle both column orderings:
+            #   standard:  [Cantidad, Precio, Total]
+            #   handmade:  [Precio, Cantidad, Total]
+            val_a = self._parse_decimal(clean_row[idx_a]) or Decimal(0)
+            val_b = self._parse_decimal(clean_row[idx_b]) or Decimal(0)
+            if val_a > val_b:
+                # First numeric is larger → it's the price
+                price_idx = idx_a
+                qty_idx   = idx_b
+                logger.info(f"Column order: [price={idx_a}, qty={idx_b}] (magnitude heuristic)")
+            else:
+                qty_idx   = idx_a
+                price_idx = idx_b
+
             description_parts = [
-                c for i, c in enumerate(clean_row[:qty_idx]) if i != iva_col_idx
+                c for i, c in enumerate(clean_row[:min(qty_idx, price_idx)]) if i != iva_col_idx
             ]
 
             item_num = None
@@ -757,7 +917,6 @@ class TextractService:
             full_description = ' '.join(description_parts)
             unit = self._detect_unit_from_text(full_description)
 
-            # Last-resort: try to find IVA % inside the description
             if iva_rate is None:
                 iva_rate = self._detect_iva_from_text(full_description)
 
@@ -776,7 +935,7 @@ class TextractService:
                 'iva_rate':     iva_rate,
             }
 
-        # Fallback: assume standard column order
+        # Last-resort: assume standard column order
         full_description = ' '.join(clean_row[1:-3]) if len(clean_row) > 3 else clean_row[0]
         if iva_rate is None:
             iva_rate = self._detect_iva_from_text(full_description)

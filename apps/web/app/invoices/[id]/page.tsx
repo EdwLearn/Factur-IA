@@ -112,6 +112,9 @@ export default function InvoiceDetailPage() {
   const [confirmError, setConfirmError] = useState<string | null>(null)
   const [alegraResult, setAlegraResult] = useState<AlegraResult | null>(null)
 
+  // Editable line items state (local overrides for Textract-extracted prices)
+  const [editedItems, setEditedItems] = useState<InvoiceLineItemShape[]>([])
+
   const pollingRef = useRef<NodeJS.Timeout | null>(null)
   const pollingStartRef = useRef<number>(0)
 
@@ -204,11 +207,45 @@ export default function InvoiceDetailPage() {
     if (id) loadData()
   }, [id, loadData])
 
+  // Sync editable items whenever invoiceData loads or refreshes
+  useEffect(() => {
+    if (invoiceData?.line_items) {
+      setEditedItems(invoiceData.line_items.map(item => ({ ...item })))
+    }
+  }, [invoiceData])
+
+  const handlePriceChange = (idx: number, rawValue: string) => {
+    // Colombian format: dots are thousands separators → strip them before parsing
+    const normalized = rawValue.replace(/\./g, '').replace(',', '.')
+    const parsed = parseFloat(normalized)
+    const newPrice = isNaN(parsed) ? 0 : parsed
+    setEditedItems(prev =>
+      prev.map((item, i) => {
+        if (i !== idx) return item
+        const subtotal = Number(item.quantity) * newPrice
+        return { ...item, unit_price: newPrice, subtotal }
+      })
+    )
+  }
+
   const handleConfirm = async () => {
     setConfirming(true)
     setConfirmError(null)
     try {
-      const res = await facturaAPI.confirmPricing(id)
+      const payload = editedItems.length > 0
+        ? {
+            line_items: editedItems.map(item => ({
+              description: item.description,
+              quantity: Number(item.quantity),
+              unit_price: Number(item.unit_price),
+              subtotal: Number(item.subtotal),
+              iva_rate: item.iva_rate != null ? Number(item.iva_rate) : null,
+              product_code: item.product_code ?? null,
+            })),
+          }
+        : undefined
+
+      const res = await facturaAPI.confirmPricing(id, payload)
       if (!res.success) {
         throw new Error(res.error?.message ?? "Error al confirmar la factura")
       }
@@ -326,6 +363,16 @@ export default function InvoiceDetailPage() {
   const isConfirmed = pricingData?.pricing_status === "confirmed"
   const hasPricedItems = (pricingData?.priced_items ?? 0) > 0
 
+  // Totals recalculated from edited items (fallback to backend totals)
+  const items = editedItems.length > 0 ? editedItems : invoiceData.line_items
+  const computedSubtotal = items.reduce((s, it) => s + Number(it.subtotal), 0)
+  const computedIva = items.reduce((s, it) => {
+    const rate = Number(it.iva_rate ?? 0)
+    return s + Number(it.subtotal) * (rate / 100)
+  }, 0)
+  const retenciones = Number(invoiceData.totals.total_retenciones ?? 0)
+  const computedTotal = computedSubtotal + computedIva - retenciones
+
   // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
@@ -436,33 +483,43 @@ export default function InvoiceDetailPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {invoiceData.line_items.map((item, idx) => (
-                    <tr
-                      key={idx}
-                      className="border-b last:border-0 hover:bg-gray-50 transition-colors"
-                    >
-                      <td className="px-6 py-3 text-gray-900">
-                        {item.description}
-                        {item.product_code && (
-                          <span className="ml-2 text-xs text-gray-400">
-                            ({item.product_code})
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-right text-gray-700">
-                        {Number(item.quantity)}
-                      </td>
-                      <td className="px-4 py-3 text-right text-gray-700">
-                        {formatCOP(Number(item.unit_price))}
-                      </td>
-                      <td className="px-4 py-3 text-right text-gray-500">
-                        {item.iva_rate != null ? `${Number(item.iva_rate)}%` : "—"}
-                      </td>
-                      <td className="px-6 py-3 text-right font-medium text-gray-900">
-                        {formatCOP(Number(item.subtotal))}
-                      </td>
-                    </tr>
-                  ))}
+                  {invoiceData.line_items.map((item, idx) => {
+                    const edited = editedItems[idx] ?? item
+                    return (
+                      <tr
+                        key={idx}
+                        className="border-b last:border-0 hover:bg-gray-50 transition-colors"
+                      >
+                        <td className="px-6 py-3 text-gray-900">
+                          {item.description}
+                          {item.product_code && (
+                            <span className="ml-2 text-xs text-gray-400">
+                              ({item.product_code})
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-right text-gray-700">
+                          {Number(item.quantity)}
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <input
+                            key={`price-${idx}-${item.unit_price}`}
+                            type="text"
+                            inputMode="numeric"
+                            defaultValue={String(Number(item.unit_price))}
+                            onBlur={(e) => handlePriceChange(idx, e.target.value)}
+                            className="w-32 text-right bg-transparent border-b border-transparent hover:border-gray-300 focus:border-blue-400 focus:outline-none text-gray-700 py-0.5 transition-colors"
+                          />
+                        </td>
+                        <td className="px-4 py-3 text-right text-gray-500">
+                          {item.iva_rate != null ? `${Number(item.iva_rate)}%` : "—"}
+                        </td>
+                        <td className="px-6 py-3 text-right font-medium text-gray-900">
+                          {formatCOP(Number(edited.subtotal))}
+                        </td>
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
             </div>
@@ -482,15 +539,15 @@ export default function InvoiceDetailPage() {
             <div className="flex justify-between text-sm">
               <span className="text-gray-600">Subtotal</span>
               <span className="font-medium">
-                {formatCOP(Number(invoiceData.totals.subtotal))}
+                {formatCOP(editedItems.length > 0 ? computedSubtotal : Number(invoiceData.totals.subtotal))}
               </span>
             </div>
 
-            {invoiceData.totals.iva_amount != null && (
+            {(editedItems.length > 0 ? computedIva > 0 : invoiceData.totals.iva_amount != null) && (
               <div className="flex justify-between text-sm">
                 <span className="text-gray-600">IVA</span>
                 <span className="font-medium">
-                  {formatCOP(Number(invoiceData.totals.iva_amount))}
+                  {formatCOP(editedItems.length > 0 ? computedIva : Number(invoiceData.totals.iva_amount))}
                 </span>
               </div>
             )}
@@ -535,7 +592,7 @@ export default function InvoiceDetailPage() {
 
             <div className="flex justify-between text-base font-bold">
               <span>Total</span>
-              <span>{formatCOP(Number(invoiceData.totals.total))}</span>
+              <span>{formatCOP(editedItems.length > 0 ? computedTotal : Number(invoiceData.totals.total))}</span>
             </div>
           </CardContent>
         </Card>

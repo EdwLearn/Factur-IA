@@ -442,6 +442,28 @@ export default function FacturIADashboard() {
     const updatedProducts = [...editedProducts]
     updatedProducts[index] = { ...updatedProducts[index], [field]: value }
 
+    // When purchase price changes, recalculate suggested price and revalidate final price
+    if (field === "purchasePrice") {
+      const newPurchasePrice = Number(value)
+      const pricingResult = calculatePrice(newPurchasePrice, markupPercentage)
+      updatedProducts[index].suggestedPrice = pricingResult.finalPrice
+
+      const errorKey = `${index}-finalPrice`
+      const finalPrice = Number(updatedProducts[index].finalPrice)
+      if (finalPrice < newPurchasePrice) {
+        setValidationErrors((prev) => ({
+          ...prev,
+          [errorKey]: `El precio final no puede ser menor al precio de compra (${formatCurrency(newPurchasePrice)})`,
+        }))
+      } else {
+        setValidationErrors((prev) => {
+          const newErrors = { ...prev }
+          delete newErrors[errorKey]
+          return newErrors
+        })
+      }
+    }
+
     // Validate final price
     if (field === "finalPrice") {
       const purchasePrice = updatedProducts[index].purchasePrice
@@ -1444,10 +1466,16 @@ export default function FacturIADashboard() {
                                 min="1"
                               />
                             </td>
-                            <td className="border border-gray-200 px-3 py-2 text-right">
-                              <span className="text-sm font-medium text-gray-900">
-                                {formatCurrency(product.purchasePrice)}
-                              </span>
+                            <td className="border border-gray-200 px-3 py-2">
+                              <Input
+                                type="number"
+                                value={product.purchasePrice}
+                                onChange={(e) =>
+                                  handleProductChange(index, "purchasePrice", Number(e.target.value) || 0)
+                                }
+                                className="w-full text-sm text-right"
+                                min="0"
+                              />
                             </td>
                             <td className="border border-gray-200 px-3 py-2">
                               <div className="flex items-center justify-between">
