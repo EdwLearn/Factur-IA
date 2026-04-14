@@ -138,3 +138,7 @@ secrets/
 uploads/
 documents/
 processed/
+apps/web/.next/
+apps/web/node_modules/
+__pycache__/
+*.pyc
