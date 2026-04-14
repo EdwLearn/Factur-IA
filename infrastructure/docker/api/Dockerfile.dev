@@ -1,0 +1,48 @@
+# Development Docker image for FastAPI backend
+# Includes dev dependencies and hot reload
+
+FROM python:3.11-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    g++ \
+    libgl1 \
+    libglib2.0-0 \
+    libsm6 \
+    libxrender1 \
+    libxext6 \
+    libgomp1 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install Python dependencies
+COPY apps/api/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install dev dependencies
+RUN pip install --no-cache-dir \
+    pytest \
+    pytest-asyncio \
+    pytest-cov \
+    black \
+    flake8 \
+    mypy \
+    ipython \
+    debugpy
+
+# Copy application code (will be mounted as volume in dev)
+COPY apps/api/src ./src
+COPY apps/api/migrations ./migrations
+COPY apps/api/alembic.ini .
+
+ENV PYTHONPATH=/app \
+    PYTHONUNBUFFERED=1 \
+    ENVIRONMENT=development
+
+EXPOSE 8000
+
+# Run with hot reload
+CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

@@ -1,0 +1,14 @@
+# Ignore large binary files
+*.pdf
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.zip
+*.tar.gz
+
+# Keep sample directory structure
+!sample-invoices/.gitkeep
+
+# Keep fixtures (small JSON files)
+!fixtures/*.json

@@ -11,7 +11,9 @@ from sqlalchemy import select, update, delete, func
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...config.settings import settings
+from fastapi import HTTPException
+
+from ...core.config import settings
 from ...database.connection import AsyncSessionFactory
 from ...database.models import ProcessedInvoice, InvoiceLineItem, Tenant, BillingRecord
 from ...models.invoice import (
@@ -20,6 +22,8 @@ from ...models.invoice import (
     InvoiceTotals, PaymentInfo, ProcessedInvoice as ProcessedInvoiceModel
 )
 from .textract import TextractService
+from .digital_pdf_extractor import DigitalPDFExtractor
+from .dian_xml_extractor import DianXMLExtractor
 
 logger = logging.getLogger(__name__)
 
@@ -28,39 +32,30 @@ class InvoiceProcessorService:
     
     def __init__(self):
         self.textract_service = TextractService()
+        self.pdf_extractor = DigitalPDFExtractor()
+        self.xml_extractor = DianXMLExtractor()
     
     async def upload_and_process_invoice(
-        self, 
+        self,
         tenant_id: str,
-        invoice_id: str, 
-        filename: str, 
+        invoice_id: str,
+        filename: str,
         file_content: bytes
     ) -> Dict[str, Any]:
         """Upload invoice and start real Textract processing"""
         async with AsyncSessionFactory() as session:
             try:
-                # Verify/create tenant
+                # Verify tenant exists — never auto-create
                 tenant_result = await session.execute(
                     select(Tenant).where(Tenant.tenant_id == tenant_id)
                 )
                 tenant = tenant_result.scalar_one_or_none()
-                
+
                 if not tenant:
-                    logger.info(f"Creating new tenant: {tenant_id}")
-                    tenant = Tenant(
-                        tenant_id=tenant_id,
-                        company_name=f"Company {tenant_id}",
-                        email=f"{tenant_id}@test.com",
-                        plan="freemium",
-                        max_invoices_month=10,
-                        invoices_processed_month=0
+                    raise HTTPException(
+                        status_code=403,
+                        detail=f"Tenant '{tenant_id}' not found. Register first via /auth/register."
                     )
-                    session.add(tenant)
-                    await session.flush()
-                
-                # Check monthly limits
-                if tenant.invoices_processed_month >= tenant.max_invoices_month:
-                    raise Exception(f"Monthly limit reached: {tenant.max_invoices_month} invoices")
                 
                 # Create invoice record
                 s3_key = f"invoices/{tenant_id}/{invoice_id}/{filename}"
@@ -78,20 +73,37 @@ class InvoiceProcessorService:
                 session.add(invoice)
                 await session.commit()
                 
-                # Upload to S3 for Textract
-                try:
-                    self.textract_service.s3_client.put_object(
-                        Bucket=settings.s3_document_bucket,
-                        Key=s3_key,
-                        Body=file_content,
-                        ContentType='application/pdf'
-                    )
-                    logger.info(f"File uploaded to S3: {s3_key}")
-                except Exception as e:
-                    logger.warning(f"S3 upload failed, using mock processing: {str(e)}")
-                
+                # Detect file type once here while we still have file_content in memory.
+                # Priority: XML > digital PDF > scanned/photo (Textract)
+                is_xml     = DianXMLExtractor.is_dian_xml(file_content)
+                is_digital = (not is_xml) and DigitalPDFExtractor.is_digital(file_content)
+
+                # Upload to S3 with correct ContentType
+                content_type = (
+                    'application/xml' if is_xml
+                    else 'application/pdf' if filename.lower().endswith('.pdf')
+                    else 'image/jpeg'
+                )
+                self.textract_service.s3_client.put_object(
+                    Bucket=settings.s3_document_bucket,
+                    Key=s3_key,
+                    Body=file_content,
+                    ContentType=content_type
+                )
+                logger.info(f"File uploaded to S3: {s3_key}")
+
+                if is_xml:
+                    source = "dian_xml"
+                elif is_digital:
+                    source = "digital_pdf"
+                else:
+                    source = "textract"
+                logger.info(f"Invoice {invoice_id} detected as: {source}")
+
                 # Start background processing
-                asyncio.create_task(self._process_invoice_with_textract(invoice_id, s3_key))
+                asyncio.create_task(
+                    self._process_invoice_with_textract(invoice_id, s3_key, file_content, is_digital, is_xml)
+                )
                 
                 logger.info(f"Invoice uploaded: {invoice_id} for tenant {tenant_id}")
                 
@@ -107,8 +119,15 @@ class InvoiceProcessorService:
                 logger.error(f"Error uploading invoice: {str(e)}")
                 raise
     
-    async def _process_invoice_with_textract(self, invoice_id: str, s3_key: str):
-        """Process invoice using REAL AWS Textract - FIXED"""
+    async def _process_invoice_with_textract(
+        self,
+        invoice_id: str,
+        s3_key: str,
+        file_content: bytes = b"",
+        is_digital: bool = False,
+        is_xml: bool = False,
+    ):
+        """Process invoice — XML > digital PDF (pdfplumber) > scanned/photo (Textract)."""
         async with AsyncSessionFactory() as session:
             try:
                 # Get invoice
@@ -116,40 +135,49 @@ class InvoiceProcessorService:
                     select(ProcessedInvoice).where(ProcessedInvoice.id == uuid.UUID(invoice_id))
                 )
                 invoice = result.scalar_one_or_none()
-                
+
                 if not invoice:
                     logger.error(f"Invoice not found for processing: {invoice_id}")
                     return
-                
+
                 # Update status to processing
                 invoice.status = "processing"
                 invoice.processing_timestamp = datetime.utcnow()
                 await session.commit()
-                
-                logger.info(f"Starting Textract processing for {invoice_id}")
-                
+
                 try:
-                    # Call REAL Textract
-                    textract_result = await self.textract_service.analyze_invoice(
-                        s3_bucket=settings.s3_document_bucket,
-                        s3_key=s3_key
-                    )
-                    
-                    extracted_data = textract_result['extracted_data']
-                    confidence_score = textract_result['confidence_score']
-                    
-                    logger.info(f"Textract completed for {invoice_id}, confidence: {confidence_score}")
-                    
-                    # Store raw Textract response
-                    invoice.textract_raw_response = textract_result.get('textract_response')
-                    
-                except Exception as textract_error:
-                    logger.warning(f"Textract failed for {invoice_id}: {str(textract_error)}")
-                    logger.info("Falling back to mock data for development")
-                    
-                    # Fallback to mock data if Textract fails
-                    extracted_data = self._create_mock_extraction()
-                    confidence_score = 0.85
+                    if is_xml and file_content:
+                        # --- Path A: DIAN XML → lxml parser (free, exact, no OCR) ---
+                        logger.info(f"Extracting DIAN XML for {invoice_id}")
+                        extracted_data = self.xml_extractor.extract_invoice_data(file_content)
+                        confidence_score = 1.0  # Structured data — perfect accuracy
+                        invoice.textract_raw_response = {"source": "dian_xml", "method": "ubl2.1"}
+                        invoice.invoice_type = "factura_electronica_dian"
+                        logger.info(f"DIAN XML extraction completed for {invoice_id}")
+
+                    elif is_digital and file_content:
+                        # --- Path B: digital PDF → pdfplumber (free, fast) ---
+                        logger.info(f"Extracting digital PDF for {invoice_id}")
+                        extracted_data = self.pdf_extractor.extract_invoice_data(file_content)
+                        confidence_score = 0.97
+                        invoice.textract_raw_response = {"source": "digital_pdf", "method": "pdfplumber"}
+                        logger.info(f"Digital PDF extraction completed for {invoice_id}")
+
+                    else:
+                        # --- Path C: scanned / photo → Textract (OCR) ---
+                        logger.info(f"Starting Textract OCR for {invoice_id}")
+                        textract_result = await self.textract_service.analyze_invoice(
+                            s3_bucket=settings.s3_document_bucket,
+                            s3_key=s3_key,
+                        )
+                        extracted_data = textract_result["extracted_data"]
+                        confidence_score = textract_result["confidence_score"]
+                        invoice.textract_raw_response = textract_result.get("textract_response")
+                        logger.info(f"Textract completed for {invoice_id}, confidence: {confidence_score}")
+
+                except Exception as extraction_error:
+                    logger.error(f"Extraction failed for {invoice_id}: {extraction_error}")
+                    raise
                 
                 # Update invoice with extracted data
                 invoice.status = "completed"
@@ -158,7 +186,9 @@ class InvoiceProcessorService:
                 
                 # Update invoice fields with SAFE extraction
                 invoice.invoice_number = self._safe_extract(extracted_data, "invoice_number")
-                invoice.invoice_type = "factura_venta"
+                # Only overwrite invoice_type if not already set by the XML path
+                if not invoice.invoice_type:
+                    invoice.invoice_type = "factura_venta"
                 invoice.issue_date = self._safe_date(extracted_data.get("issue_date"))
                 invoice.due_date = self._safe_date(extracted_data.get("due_date"))
                 
@@ -185,7 +215,23 @@ class InvoiceProcessorService:
                 invoice.subtotal = self._safe_decimal(totals.get("subtotal"))
                 invoice.iva_rate = self._safe_decimal(totals.get("iva_rate"))
                 invoice.iva_amount = self._safe_decimal(totals.get("iva_amount"))
+                # Retenciones DIAN
+                invoice.rete_renta = self._safe_decimal(totals.get("rete_renta"))
+                invoice.rete_iva = self._safe_decimal(totals.get("rete_iva"))
+                invoice.rete_ica = self._safe_decimal(totals.get("rete_ica"))
+                invoice.total_retenciones = self._safe_decimal(totals.get("total_retenciones"))
                 invoice.total_amount = self._safe_decimal(totals.get("total"))
+                # IVA desglosado por tarifa (solo XML lo provee, se guarda en JSONB)
+                iva_breakdown = totals.get("iva_breakdown")
+                if iva_breakdown:
+                    existing = invoice.textract_raw_response or {}
+                    invoice.textract_raw_response = {
+                        **existing,
+                        "iva_breakdown": [
+                            {k: float(v) if isinstance(v, Decimal) else v for k, v in entry.items()}
+                            for entry in iva_breakdown
+                        ],
+                    }
                 
                 # Payment info
                 payment_info = extracted_data.get("payment_info") or {}
@@ -199,18 +245,28 @@ class InvoiceProcessorService:
                 for item_data in line_items:
                     if item_data and item_data.get("description"):
                         try:
+                            quantity   = self._safe_decimal(item_data.get("quantity"))
+                            unit_price = self._safe_decimal(item_data.get("unit_price"))
+                            subtotal   = self._safe_decimal(item_data.get("subtotal"))
+
+                            # Fallback: derivar quantity desde subtotal/unit_price
+                            if quantity is None:
+                                if unit_price and subtotal and unit_price > 0:
+                                    quantity = (subtotal / unit_price).quantize(Decimal("0.0001"))
+                                else:
+                                    quantity = Decimal("1")
+
                             line_item = InvoiceLineItem(
                                 invoice_id=invoice.id,
                                 line_number=self._safe_int(item_data.get("item_number")),
                                 product_code=self._safe_extract(item_data, "product_code"),
                                 description=self._safe_extract(item_data, "description"),
                                 reference=self._safe_extract(item_data, "reference"),
-                                quantity=self._safe_decimal(item_data.get("quantity")),
-                                unit_price=self._safe_decimal(item_data.get("unit_price")),
-                                subtotal=self._safe_decimal(item_data.get("subtotal")),
-                                unit_measure=self._safe_extract(item_data, "unit_measure"), 
-                                
-                                # ✨ NEW: Enhanced fields for unit conversions
+                                quantity=quantity,
+                                unit_price=unit_price,
+                                subtotal=subtotal,
+                                iva_rate=self._safe_decimal(item_data.get("iva_rate")),
+                                unit_measure=self._safe_extract(item_data, "unit_measure"),
                                 original_quantity=self._safe_decimal(item_data.get("original_quantity")),
                                 original_unit=self._safe_extract(item_data, "original_unit"),
                                 unit_multiplier=self._safe_decimal(item_data.get("unit_multiplier")),
@@ -286,6 +342,56 @@ class InvoiceProcessorService:
             return int(value)
         except Exception:
             return None
+
+    # ------------------------------------------------------------------
+    # Analytics
+    # ------------------------------------------------------------------
+
+    async def get_analytics_summary(self, tenant_id: str) -> Dict[str, Any]:
+        """Return aggregated analytics for a tenant's invoices."""
+        invoices = await self.list_tenant_invoices(tenant_id, limit=1000)
+
+        total = len(invoices)
+        completed = sum(1 for inv in invoices if inv.status == InvoiceStatus.COMPLETED)
+        failed = sum(1 for inv in invoices if inv.status == InvoiceStatus.FAILED)
+        total_amount = sum(
+            inv.invoice_data.totals.total
+            for inv in invoices
+            if inv.invoice_data and inv.invoice_data.totals
+        )
+
+        return {
+            "tenant_id": tenant_id,
+            "total_invoices": total,
+            "completed_invoices": completed,
+            "failed_invoices": failed,
+            "success_rate": completed / total if total > 0 else 0,
+            "total_amount_processed": float(total_amount),
+            "currency": "COP",
+        }
+
+    # ------------------------------------------------------------------
+    # Pricing helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def build_pricing_summary(updated_items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Build a totals summary from the list returned by set_invoice_pricing."""
+        total_cost = sum(
+            item.get("cost_price", 0) * item.get("quantity", 0)
+            for item in updated_items
+        )
+        total_sale_value = sum(item.get("total_sale_value", 0) for item in updated_items)
+        total_profit = sum(item.get("total_profit", 0) for item in updated_items)
+        avg_markup = (total_profit / total_cost * 100) if total_cost > 0 else 0
+
+        return {
+            "total_items": len(updated_items),
+            "total_cost": round(total_cost, 2),
+            "total_sale_value": round(total_sale_value, 2),
+            "total_profit": round(total_profit, 2),
+            "average_markup": round(avg_markup, 2),
+        }
     
     def _create_mock_extraction(self) -> Dict[str, Any]:
         """Fallback mock data for development/testing"""
@@ -397,6 +503,7 @@ class InvoiceProcessorService:
                             quantity=item.quantity,
                             unit_price=item.unit_price,
                             subtotal=item.subtotal,
+                            iva_rate=getattr(item, 'iva_rate', None),
                             unit_measure=getattr(item, 'unit_measure', None),
                             box_number=getattr(item, 'box_number', None)
                         )
@@ -406,7 +513,10 @@ class InvoiceProcessorService:
                         subtotal=getattr(invoice, 'subtotal', None) or Decimal("0"),
                         iva_rate=getattr(invoice, 'iva_rate', None),
                         iva_amount=getattr(invoice, 'iva_amount', None),
-                        retenciones=None,
+                        rete_renta=getattr(invoice, 'rete_renta', None),
+                        rete_iva=getattr(invoice, 'rete_iva', None),
+                        rete_ica=getattr(invoice, 'rete_ica', None),
+                        total_retenciones=getattr(invoice, 'total_retenciones', None),
                         total=getattr(invoice, 'total_amount', None) or Decimal("0"),
                         total_items=getattr(invoice, 'total_items', None) or len(invoice.line_items or [])
                     ),
@@ -424,11 +534,12 @@ class InvoiceProcessorService:
                 return None
     
     async def list_tenant_invoices(
-        self, 
+        self,
         tenant_id: str,
-        limit: int = 10, 
+        limit: int = 10,
         offset: int = 0,
-        status: Optional[InvoiceStatus] = None
+        status: Optional[InvoiceStatus] = None,
+        since: Optional[datetime] = None,
     ) -> List[ProcessedInvoiceModel]:
         async with AsyncSessionFactory() as session:
             try:
@@ -439,9 +550,12 @@ class InvoiceProcessorService:
                     .offset(offset)
                     .limit(limit)
                 )
-                
+
                 if status:
                     query = query.where(ProcessedInvoice.status == status.value)
+
+                if since:
+                    query = query.where(ProcessedInvoice.upload_timestamp >= since)
                 
                 result = await session.execute(query)
                 invoices = result.scalars().all()
@@ -487,43 +601,37 @@ class InvoiceProcessorService:
             confidence_score=float(invoice.confidence_score) if invoice.confidence_score else None,
             error_message=invoice.error_message,
             s3_key=invoice.s3_key,
-            textract_job_id=invoice.textract_job_id
+            textract_job_id=invoice.textract_job_id,
+            invoice_number=invoice.invoice_number,
+            supplier_name=invoice.supplier_name,
+            supplier_nit=invoice.supplier_nit,
+            total_amount=float(invoice.total_amount) if invoice.total_amount else None,
+            issue_date=invoice.issue_date,
         )
 
     async def upload_and_process_photo(
-        self, 
+        self,
         tenant_id: str,
-        invoice_id: str, 
-        filename: str, 
+        invoice_id: str,
+        filename: str,
         photo_content: bytes
     ) -> Dict[str, Any]:
         """Upload photo, enhance it, convert to PDF, and process with Textract"""
         from .computer_vision import DocumentImageEnhancer, ImageToPDFConverter
-        
+
         async with AsyncSessionFactory() as session:
             try:
-                # Verify/create tenant
+                # Verify tenant exists — never auto-create
                 tenant_result = await session.execute(
                     select(Tenant).where(Tenant.tenant_id == tenant_id)
                 )
                 tenant = tenant_result.scalar_one_or_none()
-                
+
                 if not tenant:
-                    logger.info(f"Creating new tenant: {tenant_id}")
-                    tenant = Tenant(
-                        tenant_id=tenant_id,
-                        company_name=f"Company {tenant_id}",
-                        email=f"{tenant_id}@test.com",
-                        plan="freemium",
-                        max_invoices_month=10,
-                        invoices_processed_month=0
+                    raise HTTPException(
+                        status_code=403,
+                        detail=f"Tenant '{tenant_id}' not found. Register first via /auth/register."
                     )
-                    session.add(tenant)
-                    await session.flush()
-                
-                # Check monthly limits
-                if tenant.invoices_processed_month >= tenant.max_invoices_month:
-                    raise Exception(f"Monthly limit reached: {tenant.max_invoices_month} invoices")
                 
                 # Step 1: Enhance the photo
                 logger.info(f"Enhancing photo for invoice {invoice_id}")
@@ -547,7 +655,7 @@ class InvoiceProcessorService:
                 invoice = ProcessedInvoice(
                     id=uuid.UUID(invoice_id),
                     tenant_id=tenant_id,
-                    original_filename=pdf_filename,  # Store as PDF name
+                    original_filename=filename,  # Keep original image filename
                     file_size=len(pdf_content),
                     s3_key=s3_key,
                     status="uploaded",
@@ -558,16 +666,13 @@ class InvoiceProcessorService:
                 await session.commit()
                 
                 # Step 4: Upload PDF to S3 for Textract
-                try:
-                    self.textract_service.s3_client.put_object(
-                        Bucket=settings.s3_document_bucket,
-                        Key=s3_key,
-                        Body=pdf_content,
-                        ContentType='application/pdf'
-                    )
-                    logger.info(f"Enhanced PDF uploaded to S3: {s3_key}")
-                except Exception as e:
-                    logger.warning(f"S3 upload failed, using mock processing: {str(e)}")
+                self.textract_service.s3_client.put_object(
+                    Bucket=settings.s3_document_bucket,
+                    Key=s3_key,
+                    Body=pdf_content,
+                    ContentType='application/pdf'
+                )
+                logger.info(f"Enhanced PDF uploaded to S3: {s3_key}")
                 
                 # Step 5: Start background processing with Textract
                 asyncio.create_task(self._process_invoice_with_textract(invoice_id, s3_key))
@@ -787,51 +892,56 @@ class InvoiceProcessorService:
             
 
     async def confirm_invoice_pricing(self, invoice_id: str, tenant_id: str) -> Dict[str, Any]:
-        """Confirm pricing and prepare for inventory update"""
+        """Confirm pricing: update inventory + POST /bills to Alegra (if configured)."""
         async with AsyncSessionFactory() as session:
             try:
-                # Get priced line items
-                from ...database.models import Product
+                from ...database.models import Product, Supplier, Tenant
                 from sqlalchemy import select, update
                 from datetime import datetime
-                
-                
+
+                # ── 1. Get priced line items ──────────────────────────────
                 result = await session.execute(
                     select(InvoiceLineItem)
                     .where(InvoiceLineItem.invoice_id == uuid.UUID(invoice_id))
                     .where(InvoiceLineItem.is_priced == True)
-               )
-                
+                )
                 priced_items = result.scalars().all()
-            
-                if not priced_items:
-                    raise Exception("No priced items found to confirm")
-            
-                inventory_updates = []
 
+                if not priced_items:
+                    raise Exception("No hay items con precio para confirmar")
+
+                # ── 2. Get invoice header (for Alegra bill payload) ───────
+                inv_result = await session.execute(
+                    select(ProcessedInvoice)
+                    .where(ProcessedInvoice.id == uuid.UUID(invoice_id))
+                )
+                invoice_record = inv_result.scalar_one_or_none()
+
+                # ── 3. Update inventory ───────────────────────────────────
+                inventory_updates = []
                 for item in priced_items:
-                    # Check if product exists
                     product_result = await session.execute(
                         select(Product)
                         .where(Product.product_code == item.product_code)
                         .where(Product.tenant_id == tenant_id)
                     )
                     existing_product = product_result.scalar_one_or_none()
-                
+
                     if existing_product:
-                        # Update existing product
                         new_stock = (existing_product.current_stock or 0) + item.quantity
+                        update_values = {
+                            "current_stock": new_stock,
+                            "last_purchase_price": item.unit_price,
+                            "last_purchase_date": datetime.utcnow().date(),
+                            "updated_at": datetime.utcnow(),
+                        }
+                        if item.sale_price:
+                            update_values["sale_price"] = item.sale_price
                         await session.execute(
                             update(Product)
                             .where(Product.id == existing_product.id)
-                            .values(
-                                current_stock=new_stock,
-                                last_purchase_price=item.unit_price,
-                                last_purchase_date=datetime.utcnow().date(),
-                                updated_at=datetime.utcnow()
-                            )
+                            .values(**update_values)
                         )
-                    
                         inventory_updates.append({
                             "action": "updated_existing",
                             "product_code": item.product_code,
@@ -839,44 +949,120 @@ class InvoiceProcessorService:
                             "new_stock": float(new_stock)
                         })
                     else:
-                        # Create new product
                         new_product = Product(
                             tenant_id=tenant_id,
                             product_code=item.product_code,
                             description=item.description,
                             current_stock=item.quantity,
                             last_purchase_price=item.unit_price,
+                            sale_price=item.sale_price if item.sale_price else None,
                             last_purchase_date=datetime.utcnow().date()
                         )
                         session.add(new_product)
-                    
                         inventory_updates.append({
                             "action": "created_new",
                             "product_code": item.product_code,
                             "quantity_added": float(item.quantity),
                             "new_stock": float(item.quantity)
                         })
-            
-                # Update invoice status
+
+                # ── 4. Mark invoice as confirmed ──────────────────────────
                 await session.execute(
                     update(ProcessedInvoice)
                     .where(ProcessedInvoice.id == uuid.UUID(invoice_id))
                     .values(pricing_status="confirmed")
                 )
-            
                 await session.commit()
-            
+
+                # ── 5. Try Alegra POST /bills (non-blocking) ─────────────
+                alegra_bill = None
+                try:
+                    tenant_result = await session.execute(
+                        select(Tenant).where(Tenant.tenant_id == tenant_id)
+                    )
+                    tenant = tenant_result.scalar_one_or_none()
+
+                    if tenant and tenant.integration_config:
+                        from ...services.integrations.alegra_integration import get_client_from_config
+                        client = get_client_from_config(tenant.integration_config)
+
+                        bill_date = (
+                            invoice_record.issue_date.strftime("%Y-%m-%d")
+                            if invoice_record and invoice_record.issue_date
+                            else datetime.utcnow().strftime("%Y-%m-%d")
+                        )
+                        # ── MAPPING 1: supplier_nit → alegra_contact_id ───
+                        contact_payload: Dict[str, Any] = {}
+                        if invoice_record and invoice_record.supplier_nit:
+                            supplier_result = await session.execute(
+                                select(Supplier)
+                                .where(Supplier.nit == invoice_record.supplier_nit)
+                                .where(Supplier.tenant_id == tenant_id)
+                            )
+                            supplier_row = supplier_result.scalar_one_or_none()
+                            if supplier_row and supplier_row.alegra_contact_id:
+                                contact_payload = {"id": int(supplier_row.alegra_contact_id)}
+                                logger.info(f"Alegra contact resolved: {supplier_row.alegra_contact_id}")
+                            elif invoice_record.supplier_name:
+                                contact_payload = {"name": invoice_record.supplier_name}
+                        elif invoice_record and invoice_record.supplier_name:
+                            contact_payload = {"name": invoice_record.supplier_name}
+
+                        # ── MAPPING 2: product_code → alegra_item_id ──────
+                        bill_items = []
+                        for item in priced_items:
+                            item_payload: Dict[str, Any] = {
+                                "name": item.description or item.product_code,
+                                "quantity": float(item.quantity),
+                                "price": float(item.unit_price),
+                            }
+                            product_result = await session.execute(
+                                select(Product)
+                                .where(Product.product_code == item.product_code)
+                                .where(Product.tenant_id == tenant_id)
+                            )
+                            product_row = product_result.scalar_one_or_none()
+                            if product_row and product_row.alegra_item_id:
+                                item_payload["id"] = int(product_row.alegra_item_id)
+                            bill_items.append(item_payload)
+
+                        bill_payload: Dict[str, Any] = {
+                            "date": bill_date,
+                            "contact": contact_payload,
+                            "items": bill_items,
+                        }
+
+                        alegra_bill = await client.post_bill(bill_payload)
+                        logger.info(f"Alegra bill created: {alegra_bill.get('id')} for invoice {invoice_id}")
+
+                except ValueError:
+                    # Alegra not configured for this tenant — skip silently
+                    pass
+                except Exception as e:
+                    logger.warning(f"Alegra POST /bills failed: {e}")
+                    await session.execute(
+                        update(ProcessedInvoice)
+                        .where(ProcessedInvoice.id == uuid.UUID(invoice_id))
+                        .values(
+                            alegra_sync_status="failed",
+                            alegra_error=str(e)[:500],
+                        )
+                    )
+                    await session.commit()
+
                 return {
                     "status": "confirmed",
                     "inventory_updated": True,
                     "total_items": len(priced_items),
-                    "inventory_updates": inventory_updates
+                    "inventory_updates": inventory_updates,
+                    "alegra_bill": alegra_bill,
+                    "alegra_synced": alegra_bill is not None,
                 }
-            
+
             except Exception as e:
                 await session.rollback()
                 logger.error(f"Error confirming pricing: {str(e)}")
-                raise   
+                raise
 
     def _safe_date(self, value) -> Optional[date]:
         """Safely convert to date object"""
@@ -904,3 +1090,53 @@ class InvoiceProcessorService:
             return int(value)
         except Exception:
             return None
+
+    # ------------------------------------------------------------------
+    # Analytics
+    # ------------------------------------------------------------------
+
+    async def get_analytics_summary(self, tenant_id: str) -> Dict[str, Any]:
+        """Return aggregated analytics for a tenant's invoices."""
+        invoices = await self.list_tenant_invoices(tenant_id, limit=1000)
+
+        total = len(invoices)
+        completed = sum(1 for inv in invoices if inv.status == InvoiceStatus.COMPLETED)
+        failed = sum(1 for inv in invoices if inv.status == InvoiceStatus.FAILED)
+        total_amount = sum(
+            inv.invoice_data.totals.total
+            for inv in invoices
+            if inv.invoice_data and inv.invoice_data.totals
+        )
+
+        return {
+            "tenant_id": tenant_id,
+            "total_invoices": total,
+            "completed_invoices": completed,
+            "failed_invoices": failed,
+            "success_rate": completed / total if total > 0 else 0,
+            "total_amount_processed": float(total_amount),
+            "currency": "COP",
+        }
+
+    # ------------------------------------------------------------------
+    # Pricing helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def build_pricing_summary(updated_items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Build a totals summary from the list returned by set_invoice_pricing."""
+        total_cost = sum(
+            item.get("cost_price", 0) * item.get("quantity", 0)
+            for item in updated_items
+        )
+        total_sale_value = sum(item.get("total_sale_value", 0) for item in updated_items)
+        total_profit = sum(item.get("total_profit", 0) for item in updated_items)
+        avg_markup = (total_profit / total_cost * 100) if total_cost > 0 else 0
+
+        return {
+            "total_items": len(updated_items),
+            "total_cost": round(total_cost, 2),
+            "total_sale_value": round(total_sale_value, 2),
+            "total_profit": round(total_profit, 2),
+            "average_markup": round(avg_markup, 2),
+        }

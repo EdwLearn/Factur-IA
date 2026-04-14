@@ -3,6 +3,7 @@
 import type React from "react"
 
 import { useState } from "react"
+import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -10,16 +11,31 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 import { FileText, Eye, EyeOff, ArrowLeft } from "lucide-react"
 import Link from "next/link"
+import { login } from "@/src/lib/api/endpoints/auth"
 
 export default function LoginPage() {
+  const router = useRouter()
   const [showPassword, setShowPassword] = useState(false)
-  const [email, setEmail] = useState("")
+  const [tenantId, setTenantId] = useState("")
   const [password, setPassword] = useState("")
+  const [error, setError] = useState("")
+  const [loading, setLoading] = useState(false)
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
-    // Simulate login - redirect to dashboard
-    window.location.href = "/dashboard"
+    setError("")
+    setLoading(true)
+    try {
+      localStorage.removeItem('auth_token')
+      localStorage.removeItem('tenant_id')
+      localStorage.removeItem('company_name')
+      await login({ tenant_id: tenantId, password })
+      router.push("/dashboard")
+    } catch (err: any) {
+      setError(err.message || "Error al iniciar sesión")
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
@@ -28,7 +44,7 @@ export default function LoginPage() {
         {/* Back to Landing */}
         <div className="mb-6">
           <Link
-            href="/landing"
+            href="/"
             className="inline-flex items-center gap-2 text-gray-600 hover:text-gray-900 transition-colors"
           >
             <ArrowLeft className="w-4 h-4" />
@@ -50,14 +66,19 @@ export default function LoginPage() {
 
           <CardContent className="space-y-6">
             <form onSubmit={handleLogin} className="space-y-4">
+              {error && (
+                <div className="rounded-md bg-red-50 px-4 py-3 text-sm text-red-700 border border-red-200">
+                  {error}
+                </div>
+              )}
               <div className="space-y-2">
-                <Label htmlFor="email">Correo Electrónico</Label>
+                <Label htmlFor="tenantId">ID de empresa</Label>
                 <Input
-                  id="email"
-                  type="email"
-                  placeholder="tu@empresa.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
+                  id="tenantId"
+                  type="text"
+                  placeholder="mi-empresa"
+                  value={tenantId}
+                  onChange={(e) => setTenantId(e.target.value)}
                   required
                 />
               </div>
@@ -93,8 +114,8 @@ export default function LoginPage() {
                 </Link>
               </div>
 
-              <Button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-lg py-3">
-                Iniciar Sesión
+              <Button type="submit" disabled={loading} className="w-full bg-blue-600 hover:bg-blue-700 text-lg py-3">
+                {loading ? "Entrando..." : "Iniciar Sesión"}
               </Button>
             </form>
 

@@ -1,6 +1,7 @@
 """
 ML-powered pricing recommendation engine with smart categorization
 """
+import asyncio
 from typing import Dict, List, Optional
 from decimal import Decimal
 import logging
@@ -47,8 +48,11 @@ class PricingRecommendationEngine:
         historical_data = historical_data or []
         
         try:
-            # 1. ML-powered product categorization
-            category_info = self.category_classifier.classify_product(description)
+            # 1. ML-powered product categorization — run in thread so the event loop
+            # is not blocked by CPU-bound Transformer inference.
+            category_info = await asyncio.to_thread(
+                self.category_classifier.classify_product, description
+            )
             logger.info(f"Product '{description[:50]}...' classified as: {category_info['category']} "
                        f"(confidence: {category_info['confidence']:.2f})")
             

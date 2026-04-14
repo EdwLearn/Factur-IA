@@ -1,0 +1,26 @@
+# Development Docker image for Next.js frontend
+
+FROM node:20-alpine
+
+WORKDIR /app
+
+RUN corepack enable pnpm
+
+# Copy package files
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps/web/package.json ./apps/web/
+COPY packages/shared-types/package.json ./packages/shared-types/
+
+# Install dependencies
+RUN pnpm install
+
+# Copy source (will be mounted as volume in dev)
+COPY . .
+
+ENV NEXT_TELEMETRY_DISABLED=1
+
+EXPOSE 3000
+
+WORKDIR /app/apps/web
+
+CMD ["pnpm", "dev"]

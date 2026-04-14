@@ -9,7 +9,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from decimal import Decimal
 from datetime import datetime, date
 
-from ....config.settings import settings
+from ....core.config import settings
 from .textract_enhancer import enhance_textract_response
 
 logger = logging.getLogger(__name__)
@@ -18,8 +18,15 @@ class TextractService:
     """Service for AWS Textract document analysis"""
     
     def __init__(self):
-        self.textract_client = boto3.client('textract', region_name=settings.aws_region)
-        self.s3_client = boto3.client('s3', region_name=settings.aws_region)
+        client_kwargs = {"region_name": settings.aws_region}
+        if settings.aws_access_key_id:
+            client_kwargs["aws_access_key_id"] = settings.aws_access_key_id
+        if settings.aws_secret_access_key:
+            client_kwargs["aws_secret_access_key"] = settings.aws_secret_access_key
+        if settings.aws_endpoint_url:
+            client_kwargs["endpoint_url"] = settings.aws_endpoint_url
+        self.textract_client = boto3.client("textract", **client_kwargs)
+        self.s3_client = boto3.client("s3", **client_kwargs)
     
     async def analyze_invoice(self, s3_bucket: str, s3_key: str) -> Dict[str, Any]:
         """
@@ -337,85 +344,245 @@ class TextractService:
         return customer
     
     
+    # Known header aliases for an IVA column in Colombian invoices
+    _IVA_HEADER_ALIASES = {
+        'iva', 'iva%', '%iva', 'tarifa iva', 'tarifa',
+        'impuesto', 'imp', 'tax', 'tasa', '% iva',
+    }
+
+    def _detect_iva_column(self, header_row: List[str]) -> Optional[int]:
+        """Return the column index of the IVA/tarifa column, or None."""
+        for idx, cell in enumerate(header_row):
+            if str(cell).strip().lower() in self._IVA_HEADER_ALIASES:
+                return idx
+        return None
+
+    def _detect_iva_from_text(self, text: str) -> Optional[Decimal]:
+        """
+        Try to extract an IVA % from a cell or description string.
+        Handles: '19%', '19 %', 'IVA19', '0%', '5%'
+        """
+        if not text:
+            return None
+        # Explicit percentage — e.g. "19%", "5 %"
+        m = re.search(r'\b(0|5|19)\s*%', str(text))
+        if m:
+            return Decimal(m.group(1))
+        # Inline IVA tag — e.g. "IVA19", "IVA 5"
+        m = re.search(r'IVA\s*(0|5|19)\b', str(text), re.IGNORECASE)
+        if m:
+            return Decimal(m.group(1))
+        return None
+
+    # Keywords that identify a product/line-items table header
+    _PRODUCT_HEADER_KEYWORDS = {
+        'descripcion', 'descripción', 'description',
+        'cantidad', 'qty', 'quantity',
+        'valor', 'value', 'precio', 'price',
+        'item', 'artículo', 'articulo', 'producto',
+        'u/m', 'unidad', 'um', 'unit',
+    }
+
+    def _find_product_table(self, tables: List[Dict]) -> Optional[Dict]:
+        """
+        Return the table whose first row contains the most product-header keywords.
+        Falls back to the largest table if no header row matches.
+        """
+        best_table = None
+        best_score = 0
+
+        for table in tables:
+            if not table.get('rows'):
+                continue
+            header_row = table['rows'][0]
+            score = sum(
+                1 for cell in header_row
+                if str(cell).strip().lower() in self._PRODUCT_HEADER_KEYWORDS
+            )
+            if score > best_score:
+                best_score = score
+                best_table = table
+
+        if best_score >= 2:
+            logger.info(f"✅ Product table found by header (score={best_score})")
+            return best_table
+
+        # Fallback: largest table
+        logger.warning("⚠️ No product table header found — using largest table as fallback")
+        return max(tables, key=lambda t: t['row_count']) if tables else None
+
     def _extract_line_items(self, tables: List[Dict], lines: List[str]) -> List[Dict]:
         """Extract product line items from tables - FIXED FOR COLOMBIAN INVOICES"""
         line_items = []
-    
-        # Process the largest table (likely the product table)
+
         if tables:
-            main_table = max(tables, key=lambda t: t['row_count'])
-        
+            main_table = self._find_product_table(tables)
+            if not main_table:
+                main_table = max(tables, key=lambda t: t['row_count'])
+            header_row = main_table['rows'][0] if main_table['rows'] else []
+            iva_col_idx = self._detect_iva_column(header_row)
+
             for i, row in enumerate(main_table['rows']):
                 if i == 0:  # Skip header row
                     continue
-                    
-                if len(row) >= 3:  # Need at least some basic data
-                    try:
-                        # FIXED: Better parsing for Colombian invoice format
-                        item = self._parse_colombian_invoice_line(row, i)
 
-                        # Only add if we have essential data
+                if len(row) >= 3:
+                    try:
+                        item = self._parse_colombian_invoice_line(row, i, iva_col_idx)
                         if item.get('description') and item.get('quantity') and item.get('unit_price'):
                             line_items.append(item)
-                        
                     except Exception as e:
                         logger.warning(f"Error parsing line item {i}: {str(e)}")
                         continue
-    
+
         # If no table parsing worked, try text-based extraction
         if not line_items:
             line_items = self._extract_items_from_text_lines(lines)
             
         if not line_items:
-            logger.warning("Using Casoli mock data for development")
-            line_items = [
-            {
-                'product_code': '1 049 (DAMA)',
-                'description': 'CHANCLA RAJADO DAMA 36-40 (X7)(8 BUENO)',
-                'quantity': Decimal('1'),
-                'unit_measure': 'DOC',
-                'unit_price': Decimal('105000'),
-                'subtotal': Decimal('105000')
-            }
-        ]
-    
+            logger.warning("No items from tables — intentando extracción por texto")
+
         return line_items
-    
+
+    def _extract_items_from_text_lines(self, lines: List[str]) -> List[Dict]:
+        """
+        Fallback: extrae ítems de factura leyendo líneas de texto plano.
+        Busca líneas con al menos 2 valores numéricos (cantidad + precio).
+        """
+        items = []
+        # Patrón: línea que contiene al menos dos números (posiblemente separados por espacios)
+        num_re = re.compile(r'[\d]+(?:[.,]\d+)*')
+
+        # Palabras que indican una línea de encabezado o total (las excluimos)
+        skip_keywords = re.compile(
+            r'SUBTOTAL|TOTAL|IVA|IMPUESTO|DESCUENTO|RETE|PRECIO|VALOR|'
+            r'CANTIDAD|DESCRIPCI[OÓ]N|REFERENCIA|CODIGO|ARTÍCULO|ITEM',
+            re.IGNORECASE,
+        )
+
+        for line in lines:
+            line_stripped = line.strip()
+            if not line_stripped or skip_keywords.search(line_stripped):
+                continue
+
+            numbers = num_re.findall(line_stripped)
+            if len(numbers) < 2:
+                continue
+
+            # El último número es el subtotal, el penúltimo el precio unitario
+            # y el antepenúltimo (o el que quede) la cantidad
+            try:
+                subtotal_str   = numbers[-1]
+                unit_price_str = numbers[-2]
+                qty_str        = numbers[-3] if len(numbers) >= 3 else "1"
+
+                subtotal   = self._parse_decimal(subtotal_str)
+                unit_price = self._parse_decimal(unit_price_str)
+                quantity   = self._parse_decimal(qty_str)
+
+                if not unit_price or not quantity:
+                    continue
+
+                # La descripción es todo lo que queda antes del primer número
+                first_num_pos = line_stripped.index(numbers[0])
+                description = line_stripped[:first_num_pos].strip() if first_num_pos > 0 else line_stripped
+
+                if not description:
+                    continue
+
+                items.append({
+                    'product_code': self._extract_product_code(description),
+                    'description':  description,
+                    'reference':    None,
+                    'unit_measure': self._detect_unit_from_text(description),
+                    'quantity':     quantity,
+                    'unit_price':   unit_price,
+                    'subtotal':     subtotal or (quantity * unit_price),
+                    'iva_rate':     self._detect_iva_from_text(line_stripped),
+                })
+            except Exception as e:
+                logger.debug(f"Skipping line (parse error): {line_stripped!r} — {e}")
+                continue
+
+        return items
+
     def _extract_totals(self, lines: List[str], key_values: Dict[str, str]) -> Dict[str, Any]:
-        """Extract totals and tax information"""
+        """Extract totals and tax information including DIAN retenciones"""
         totals = {
             'subtotal': None,
             'iva_rate': None,
             'iva_amount': None,
+            'rete_renta': None,
+            'rete_iva': None,
+            'rete_ica': None,
+            'total_retenciones': None,
             'total': None,
-            'total_items': None
+            'total_items': None,
         }
-        
-        # Look for total patterns
+
+        # Patterns that signal a monetary amount on the same line
+        amount_pattern = re.compile(r'\$?\s*([\d\.]+(?:,\d{2})?)', re.IGNORECASE)
+
         for line in lines:
-            # Subtotal
-            if 'SUBTOTAL' in line.upper():
-                subtotal_match = re.search(r'[\$]?\s*([\d,]+)', line)
-                if subtotal_match:
-                    totals['subtotal'] = self._parse_decimal(subtotal_match.group(1))
-            
-            # IVA
-            if 'IVA' in line.upper():
-                iva_match = re.search(r'[\$]?\s*([\d,]+)', line)
-                if iva_match:
-                    totals['iva_amount'] = self._parse_decimal(iva_match.group(1))
-                
-                # IVA rate
-                rate_match = re.search(r'(\d+)%', line)
-                if rate_match:
-                    totals['iva_rate'] = Decimal(rate_match.group(1))
-            
-            # Total
-            if 'TOTAL' in line.upper() and 'SUBTOTAL' not in line.upper():
-                total_match = re.search(r'[\$]?\s*([\d,]+)', line)
-                if total_match:
-                    totals['total'] = self._parse_decimal(total_match.group(1))
-        
+            upper = line.upper()
+
+            # --- Subtotal ---
+            if 'SUBTOTAL' in upper:
+                m = amount_pattern.search(line)
+                if m:
+                    totals['subtotal'] = self._parse_decimal(m.group(1))
+
+            # --- IVA (skip lines that are actually retenciones) ---
+            if 'IVA' in upper and 'RETEIVA' not in upper and 'RETE IVA' not in upper:
+                m = amount_pattern.search(line)
+                if m:
+                    totals['iva_amount'] = self._parse_decimal(m.group(1))
+                rate_m = re.search(r'(\d{1,2})\s*%', line)
+                if rate_m:
+                    totals['iva_rate'] = Decimal(rate_m.group(1))
+
+            # --- Retención en la Fuente ---
+            # Aliases: RETEFUENTE, RETE FUENTE, RETENCIÓN FUENTE, RET. FUENTE, RTEFTE
+            if re.search(r'RETE\s*FUENTE|RETEFUENTE|RET\.?\s*FUENTE|RTEFTE|RETENCI[OÓ]N\s*EN\s*LA\s*FUENTE', upper):
+                m = amount_pattern.search(line)
+                if m:
+                    totals['rete_renta'] = self._parse_decimal(m.group(1))
+
+            # --- ReteIVA ---
+            # Aliases: RETEIVA, RETE IVA, RET IVA, RETENCIÓN IVA
+            if re.search(r'RETE\s*IVA|RETEIVA|RET\.?\s*IVA|RETENCI[OÓ]N\s*IVA', upper):
+                m = amount_pattern.search(line)
+                if m:
+                    totals['rete_iva'] = self._parse_decimal(m.group(1))
+
+            # --- ReteICA ---
+            # Aliases: RETEICA, RETE ICA, RET ICA, RETENCIÓN ICA
+            if re.search(r'RETE\s*ICA|RETEICA|RET\.?\s*ICA|RETENCI[OÓ]N\s*ICA', upper):
+                m = amount_pattern.search(line)
+                if m:
+                    totals['rete_ica'] = self._parse_decimal(m.group(1))
+
+            # --- Total retenciones (línea resumen que algunos proveedores incluyen) ---
+            if re.search(r'TOTAL\s*RETENCI[OÓ]N|TOTAL\s*RETE', upper):
+                m = amount_pattern.search(line)
+                if m:
+                    totals['total_retenciones'] = self._parse_decimal(m.group(1))
+
+            # --- Total final ---
+            if 'TOTAL' in upper and 'SUBTOTAL' not in upper and not re.search(
+                r'RETE|RETENCI[OÓ]N', upper
+            ):
+                m = amount_pattern.search(line)
+                if m:
+                    totals['total'] = self._parse_decimal(m.group(1))
+
+        # If no explicit total_retenciones line, compute it from the parts
+        if totals['total_retenciones'] is None:
+            parts = [totals['rete_renta'], totals['rete_iva'], totals['rete_ica']]
+            found = [p for p in parts if p is not None]
+            if found:
+                totals['total_retenciones'] = sum(found)
+
         return totals
     
     def _extract_payment_info(self, lines: List[str], key_values: Dict[str, str]) -> Dict[str, Any]:
@@ -545,69 +712,85 @@ class TextractService:
     
         return 'UND'
     
-    def _parse_colombian_invoice_line(self, row: List[str], row_index: int) -> Dict:
+    def _parse_colombian_invoice_line(
+        self, row: List[str], row_index: int, iva_col_idx: Optional[int] = None
+    ) -> Dict:
         """
-        Parse Colombian invoice line with proper field detection
-        Handles the format: ITEM, REF, DESCRIPTION, QTY, UNIT, PRICE, SUBTOTAL
+        Parse Colombian invoice line with proper field detection.
+        Handles: ITEM, REF, DESCRIPTION, QTY, UNIT, IVA%, PRICE, SUBTOTAL
+
+        iva_col_idx: column index of the IVA column detected from the header row.
         """
-        # Clean row data
         clean_row = [str(cell).strip() for cell in row if cell is not None]
-    
+
         if len(clean_row) < 4:
             return {}
-    
-        # Try to detect the actual structure
-        # Look for numeric patterns to identify QTY, PRICE, SUBTOTAL
+
+        # --- IVA extraction ---
+        # Priority: explicit column > % in the cell text > embedded in description
+        iva_rate: Optional[Decimal] = None
+        if iva_col_idx is not None and iva_col_idx < len(clean_row):
+            iva_rate = self._detect_iva_from_text(clean_row[iva_col_idx])
+
+        # Numeric indices (excluding the IVA column so it doesn't confuse positional logic)
         numeric_indices = []
         for idx, cell in enumerate(clean_row):
+            if idx == iva_col_idx:
+                continue
             if self._is_numeric(cell):
                 numeric_indices.append(idx)
-    
+
         if len(numeric_indices) >= 3:
-            # Last 3 numeric values are likely: QTY, PRICE, SUBTOTAL
-            qty_idx = numeric_indices[-3]
-            price_idx = numeric_indices[-2]
+            qty_idx      = numeric_indices[-3]
+            price_idx    = numeric_indices[-2]
             subtotal_idx = numeric_indices[-1]
-        
-            # Everything before quantity is description/code
-            description_parts = clean_row[:qty_idx]
-        
-            # Try to separate item number from product code/description
+
+            description_parts = [
+                c for i, c in enumerate(clean_row[:qty_idx]) if i != iva_col_idx
+            ]
+
             item_num = None
             if description_parts and description_parts[0].isdigit():
                 item_num = int(description_parts[0])
                 description_parts = description_parts[1:]
-        
-            # Reconstruct description
+
             full_description = ' '.join(description_parts)
-        
-            # Detect unit from description
             unit = self._detect_unit_from_text(full_description)
-            
-            raw_reference = clean_row[0] if len(clean_row) > 0 else None
+
+            # Last-resort: try to find IVA % inside the description
+            if iva_rate is None:
+                iva_rate = self._detect_iva_from_text(full_description)
+
+            raw_reference = clean_row[0] if clean_row else None
             reference = self._clean_reference(raw_reference)
-        
+
             return {
-                'item_number': item_num or row_index,
+                'item_number':  item_num or row_index,
                 'product_code': self._extract_product_code(full_description),
-                'description': full_description,
-                'reference': reference,
+                'description':  full_description,
+                'reference':    reference,
                 'unit_measure': unit,
-                'quantity': self._parse_decimal(clean_row[qty_idx]),
-                'unit_price': self._parse_decimal(clean_row[price_idx]),
-                'subtotal': self._parse_decimal(clean_row[subtotal_idx])
+                'quantity':     self._parse_decimal(clean_row[qty_idx]),
+                'unit_price':   self._parse_decimal(clean_row[price_idx]),
+                'subtotal':     self._parse_decimal(clean_row[subtotal_idx]),
+                'iva_rate':     iva_rate,
             }
-    
-        # Fallback: assume standard order
+
+        # Fallback: assume standard column order
+        full_description = ' '.join(clean_row[1:-3]) if len(clean_row) > 3 else clean_row[0]
+        if iva_rate is None:
+            iva_rate = self._detect_iva_from_text(full_description)
+
         return {
-            'item_number': row_index,
-            'product_code': clean_row[0] if len(clean_row) > 0 else None,
-            'description': ' '.join(clean_row[1:-3]) if len(clean_row) > 3 else clean_row[0],
-            'reference': clean_row[0] if len(clean_row) > 0 else None,
+            'item_number':  row_index,
+            'product_code': clean_row[0] if clean_row else None,
+            'description':  full_description,
+            'reference':    clean_row[0] if clean_row else None,
             'unit_measure': self._detect_unit_from_text(' '.join(clean_row)),
-            'quantity': self._parse_decimal(clean_row[-3]) if len(clean_row) >= 3 else None,
-            'unit_price': self._parse_decimal(clean_row[-2]) if len(clean_row) >= 2 else None,
-            'subtotal': self._parse_decimal(clean_row[-1]) if len(clean_row) >= 1 else None
+            'quantity':     self._parse_decimal(clean_row[-3]) if len(clean_row) >= 3 else None,
+            'unit_price':   self._parse_decimal(clean_row[-2]) if len(clean_row) >= 2 else None,
+            'subtotal':     self._parse_decimal(clean_row[-1]) if len(clean_row) >= 1 else None,
+            'iva_rate':     iva_rate,
         }
 
         # 4. AGREGAR método para extraer código de producto:

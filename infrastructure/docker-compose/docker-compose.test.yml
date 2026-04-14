@@ -1,0 +1,105 @@
+# Testing Docker Compose configuration
+version: '3.8'
+
+services:
+  postgres-test:
+    image: postgres:15-alpine
+    container_name: facturia-postgres-test
+    environment:
+      POSTGRES_DB: facturia_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    tmpfs:
+      - /var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+    networks:
+      - facturia-test
+
+  redis-test:
+    image: redis:7-alpine
+    container_name: facturia-redis-test
+    tmpfs:
+      - /data
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+    networks:
+      - facturia-test
+
+  localstack-test:
+    image: localstack/localstack:latest
+    container_name: facturia-localstack-test
+    environment:
+      SERVICES: s3,textract
+      DEBUG: 0
+      AWS_DEFAULT_REGION: us-east-1
+    tmpfs:
+      - /tmp/localstack
+    ports:
+      - "4567:4566"
+    networks:
+      - facturia-test
+
+  api-test:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/api/Dockerfile.dev
+    container_name: facturia-api-test
+    environment:
+      ENVIRONMENT: test
+      DB_HOST: postgres-test
+      DB_PORT: 5432
+      DB_NAME: facturia_test
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      REDIS_HOST: redis-test
+      REDIS_PORT: 6379
+      AWS_ENDPOINT_URL: http://localstack-test:4566
+      AWS_ACCESS_KEY_ID: testing
+      AWS_SECRET_ACCESS_KEY: testing
+      S3_DOCUMENT_BUCKET: facturia-test-documents
+      LOG_LEVEL: WARNING
+    volumes:
+      - ../../apps/api:/app
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+      redis-test:
+        condition: service_healthy
+      localstack-test:
+        condition: service_started
+    ports:
+      - "8001:8000"
+    networks:
+      - facturia-test
+
+  web-test:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/web/Dockerfile.dev
+    container_name: facturia-web-test
+    environment:
+      NODE_ENV: test
+      NEXT_PUBLIC_API_URL: http://api-test:8000/api/v1
+    volumes:
+      - ../../apps/web:/app/apps/web
+    depends_on:
+      - api-test
+    ports:
+      - "3001:3000"
+    networks:
+      - facturia-test
+
+networks:
+  facturia-test:
+    driver: bridge

@@ -1,0 +1,54 @@
+{
+  "name": "facturia-monorepo",
+  "version": "2.0.0",
+  "private": true,
+  "description": "FacturIA - Invoice Processing SaaS for Colombian Retail",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "turbo run dev",
+    "dev:api": "cd apps/api && uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000",
+    "dev:web": "cd apps/web && pnpm dev",
+    "build": "turbo run build",
+    "build:api": "cd apps/api && python -m build",
+    "build:web": "cd apps/web && pnpm build",
+    "test": "turbo run test",
+    "test:unit": "turbo run test:unit",
+    "test:integration": "turbo run test:integration",
+    "test:e2e": "cd apps/web && pnpm test:e2e",
+    "test:api": "cd apps/api && pytest",
+    "test:web": "cd apps/web && pnpm test",
+    "test:coverage": "turbo run test -- --coverage",
+    "lint": "turbo run lint",
+    "lint:api": "cd apps/api && black --check src/ && flake8 src/ && mypy src/",
+    "lint:web": "cd apps/web && pnpm lint",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md,yml,yaml}\" && cd apps/api && black src/",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md,yml,yaml}\"",
+    "type-check": "turbo run type-check",
+    "clean": "turbo run clean && rm -rf node_modules .turbo",
+    "db:migrate": "cd apps/api && alembic upgrade head",
+    "db:rollback": "cd apps/api && alembic downgrade -1",
+    "db:reset": "./scripts/dev/reset-db.sh",
+    "db:seed": "cd apps/api && python scripts/seed_data.py",
+    "docker:dev": "docker-compose -f infrastructure/docker-compose/docker-compose.dev.yml up",
+    "docker:test": "docker-compose -f infrastructure/docker-compose/docker-compose.test.yml up",
+    "docker:prod": "docker-compose -f infrastructure/docker-compose/docker-compose.yml up",
+    "docker:down": "docker-compose down -v",
+    "setup": "./scripts/setup/install-dependencies.sh",
+    "setup:db": "./scripts/setup/setup-database.sh",
+    "setup:aws": "./scripts/setup/setup-aws.sh"
+  },
+  "devDependencies": {
+    "@turbo/gen": "^1.11.3",
+    "prettier": "^3.1.1",
+    "turbo": "^1.11.3"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=8.0.0",
+    "python": ">=3.11.0"
+  },
+  "packageManager": "pnpm@8.15.1"
+}

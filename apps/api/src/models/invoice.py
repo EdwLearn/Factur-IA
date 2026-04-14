@@ -52,6 +52,7 @@ class InvoiceLineItem(BaseModel):
     quantity: Decimal = Field(..., description="Quantity ordered")
     unit_price: Decimal = Field(..., description="Price per unit")
     subtotal: Decimal = Field(..., description="Line total")
+    iva_rate: Optional[Decimal] = Field(None, description="IVA % de esta línea (0, 5, 19)")
     unit_measure: Optional[str] = "UNIDAD"
     box_number: Optional[str] = None  # For organization
     
@@ -65,7 +66,11 @@ class InvoiceTotals(BaseModel):
     subtotal: Decimal = Field(default=Decimal("0"), description="Subtotal before taxes")
     iva_rate: Optional[Decimal] = Field(None, description="IVA rate %")
     iva_amount: Optional[Decimal] = Field(None, description="IVA amount")
-    retenciones: Optional[Decimal] = Field(None, description="Retenciones amount")
+    # Retenciones DIAN desglosadas
+    rete_renta: Optional[Decimal] = Field(None, description="Retención en la Fuente")
+    rete_iva: Optional[Decimal] = Field(None, description="Retención de IVA (ReteIVA)")
+    rete_ica: Optional[Decimal] = Field(None, description="Retención ICA")
+    total_retenciones: Optional[Decimal] = Field(None, description="Suma de todas las retenciones")
     total: Decimal = Field(default=Decimal("0"), description="Final total")
     total_items: Optional[int] = Field(None, description="Total number of items")
     
@@ -134,16 +139,23 @@ class ProcessedInvoice(BaseModel):
     upload_timestamp: datetime
     processing_timestamp: Optional[datetime] = None
     completion_timestamp: Optional[datetime] = None
-    
+
     # Processing info
     status: InvoiceStatus = InvoiceStatus.UPLOADED
     confidence_score: Optional[float] = None
     processing_time_seconds: Optional[float] = None
     error_message: Optional[str] = None
-    
+
+    # Extracted invoice fields (flat, para listados)
+    invoice_number: Optional[str] = None
+    supplier_name: Optional[str] = None
+    supplier_nit: Optional[str] = None
+    total_amount: Optional[float] = None
+    issue_date: Optional[date] = None
+
     # Extracted data (opcional - solo se incluye cuando se solicita)
     invoice_data: Optional[InvoiceData] = None
-    
+
     # Storage info
     s3_key: Optional[str] = None
     textract_job_id: Optional[str] = None

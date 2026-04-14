@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "facturia-utils"
+version = "1.0.0"
+description = "Shared Python utilities for FacturIA"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.5.0",
+    "python-dotenv>=1.0.0",
+]

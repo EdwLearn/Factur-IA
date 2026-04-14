@@ -1,195 +1,188 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts"
-import { BarChart3, TrendingUp, FileText, Package, DollarSign, Download, Calendar } from "lucide-react"
+import {
+  AreaChart, Area,
+  BarChart, Bar,
+  LineChart, Line,
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  ReferenceLine, Cell, Legend,
+} from "recharts"
+import {
+  BarChart3, TrendingUp, TrendingDown, FileText, Package,
+  DollarSign, Download, Calendar, ShoppingCart,
+} from "lucide-react"
+import { facturaAPI } from "@/lib/api/facturaAPI"
+import type { ReportsData, AnalyticsData } from "@/lib/api/endpoints/dashboard"
 
-// Mock data for charts
-const monthlyInvoicesData = [
-  { month: "Jul 2023", invoices: 45, value: 125000000 },
-  { month: "Ago 2023", invoices: 52, value: 142000000 },
-  { month: "Sep 2023", invoices: 48, value: 138000000 },
-  { month: "Oct 2023", invoices: 61, value: 165000000 },
-  { month: "Nov 2023", invoices: 58, value: 158000000 },
-  { month: "Dic 2023", invoices: 72, value: 195000000 },
-  { month: "Ene 2024", invoices: 67, value: 182000000 },
-  { month: "Feb 2024", invoices: 74, value: 201000000 },
-  { month: "Mar 2024", invoices: 69, value: 189000000 },
-  { month: "Abr 2024", invoices: 78, value: 215000000 },
-  { month: "May 2024", invoices: 82, value: 225000000 },
-  { month: "Jun 2024", invoices: 85, value: 235000000 },
-]
-
-const topSuppliersData = [
-  { name: "Textiles Antioquia S.A.", volume: 198000000, invoices: 67 },
-  { name: "Distribuidora Medellín S.A.S", volume: 165000000, invoices: 45 },
-  { name: "Comercializadora Bogotá S.A.S", volume: 134500000, invoices: 52 },
-  { name: "Calzado Colombia Ltda", volume: 125000000, invoices: 39 },
-  { name: "Manufacturas del Caribe S.A.", volume: 87300000, invoices: 32 },
-]
-
-interface BestSellingProduct {
-  id: string
-  name: string
-  category: string
-  unitsSold: number
-  revenue: number
-  margin: number
-  supplier: string
+const DATE_RANGE_MONTHS: Record<string, number> = {
+  "7days": 1,
+  "30days": 1,
+  "3months": 3,
+  "6months": 6,
+  "12months": 12,
 }
 
-const bestSellingProducts: BestSellingProduct[] = [
-  {
-    id: "1",
-    name: "Camiseta Polo Básica Blanca",
-    category: "Textiles",
-    unitsSold: 245,
-    revenue: 11025000,
-    margin: 44.4,
-    supplier: "Textiles Antioquia S.A.",
-  },
-  {
-    id: "2",
-    name: "Jean Clásico Azul Talla 32",
-    category: "Textiles",
-    unitsSold: 189,
-    revenue: 16065000,
-    margin: 46.7,
-    supplier: "Distribuidora Medellín S.A.S",
-  },
-  {
-    id: "3",
-    name: "Zapatos Deportivos Nike Air Max",
-    category: "Calzado",
-    unitsSold: 156,
-    revenue: 49920000,
-    margin: 43.8,
-    supplier: "Calzado Colombia Ltda",
-  },
-  {
-    id: "4",
-    name: "Blusa Elegante Blanca",
-    category: "Textiles",
-    unitsSold: 134,
-    revenue: 7772000,
-    margin: 45.2,
-    supplier: "Textiles Antioquia S.A.",
-  },
-  {
-    id: "5",
-    name: "Botas de Trabajo Caterpillar",
-    category: "Calzado",
-    unitsSold: 98,
-    revenue: 37240000,
-    margin: 41.8,
-    supplier: "Calzado Colombia Ltda",
-  },
-  {
-    id: "6",
-    name: "Correa de Cuero Marrón",
-    category: "Accesorios",
-    unitsSold: 87,
-    revenue: 5655000,
-    margin: 46.2,
-    supplier: "Accesorios y Más S.A.S",
-  },
-  {
-    id: "7",
-    name: "Gorra Deportiva Negra",
-    category: "Accesorios",
-    unitsSold: 76,
-    revenue: 2660000,
-    margin: 48.6,
-    supplier: "Accesorios y Más S.A.S",
-  },
-  {
-    id: "8",
-    name: "Sandalias de Playa Adidas",
-    category: "Calzado",
-    unitsSold: 65,
-    revenue: 7800000,
-    margin: 45.8,
-    supplier: "Calzado Colombia Ltda",
-  },
-]
+const MARGIN_TARGET = 30
+
+function getMarginColor(margin: number): string {
+  if (margin >= 40) return "#16a34a"
+  if (margin >= MARGIN_TARGET) return "#d97706"
+  return "#dc2626"
+}
 
 export function ReportsAnalyticsPage() {
   const [dateRange, setDateRange] = useState("12months")
   const [exportFormat, setExportFormat] = useState("pdf")
+  const [reportsData, setReportsData] = useState<ReportsData | null>(null)
+  const [analyticsData, setAnalyticsData] = useState<AnalyticsData | null>(null)
+  const [totalInventoryValue, setTotalInventoryValue] = useState(0)
+  const [inventoryGrowth, setInventoryGrowth] = useState(0)
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
-  const keyMetrics = useMemo(() => {
-    const currentMonth = monthlyInvoicesData[monthlyInvoicesData.length - 1]
-    const previousMonth = monthlyInvoicesData[monthlyInvoicesData.length - 2]
+  useEffect(() => {
+    loadData()
+  }, [dateRange])
 
-    const invoicesThisMonth = currentMonth.invoices
-    const invoicesGrowth = ((currentMonth.invoices - previousMonth.invoices) / previousMonth.invoices) * 100
-
-    const totalInventoryValue = 285000000 // Mock value
-    const inventoryGrowth = 12.5
-
-    const totalRevenue = bestSellingProducts.reduce((sum, product) => sum + product.revenue, 0)
-    const totalCost = bestSellingProducts.reduce(
-      (sum, product) => sum + product.revenue * (1 - product.margin / 100),
-      0,
-    )
-    const averageMargin = ((totalRevenue - totalCost) / totalRevenue) * 100
-
-    return {
-      invoicesThisMonth,
-      invoicesGrowth,
-      totalInventoryValue,
-      inventoryGrowth,
-      averageMargin,
+  const loadData = async () => {
+    setIsLoading(true)
+    setError(null)
+    try {
+      const months = DATE_RANGE_MONTHS[dateRange] ?? 12
+      const [reports, analytics, metrics] = await Promise.all([
+        facturaAPI.getReports(months),
+        facturaAPI.getDashboardAnalytics(),
+        facturaAPI.getDashboardMetrics(),
+      ])
+      setReportsData(reports)
+      setAnalyticsData(analytics)
+      setTotalInventoryValue(metrics.total_inventory_value)
+      setInventoryGrowth(metrics.month_over_month_inventory)
+    } catch (err) {
+      setError("No se pudieron cargar los datos. Verifica que el servidor esté activo.")
+      console.error("Error loading reports:", err)
+    } finally {
+      setIsLoading(false)
     }
-  }, [])
+  }
 
-  const formatCurrency = (amount: number) => {
-    return new Intl.NumberFormat("es-CO", {
+  // ── Computed values ─────────────────────────────────────────────────────────
+
+  const invoicesThisMonth = reportsData?.monthly_invoices?.at(-1)?.invoices ?? 0
+  const invoicesPrevMonth = reportsData?.monthly_invoices?.at(-2)?.invoices ?? 0
+  const invoicesGrowth =
+    invoicesPrevMonth > 0
+      ? ((invoicesThisMonth - invoicesPrevMonth) / invoicesPrevMonth) * 100
+      : invoicesThisMonth > 0 ? 100 : 0
+
+  const totalSpend = reportsData?.monthly_invoices?.reduce(
+    (sum, m) => sum + (m.value ?? 0), 0
+  ) ?? 0
+
+  const spendThisMonth = reportsData?.monthly_invoices?.at(-1)?.value ?? 0
+  const spendPrevMonth = reportsData?.monthly_invoices?.at(-2)?.value ?? 0
+  const spendGrowth =
+    spendPrevMonth > 0
+      ? ((spendThisMonth - spendPrevMonth) / spendPrevMonth) * 100
+      : spendThisMonth > 0 ? 100 : 0
+
+  const averageMargin = (() => {
+    const products = reportsData?.top_products?.filter((p) => p.margin !== null) ?? []
+    if (!products.length) return 0
+    return products.reduce((sum, p) => sum + (p.margin ?? 0), 0) / products.length
+  })()
+
+  const productsWithMargin = (reportsData?.top_products ?? [])
+    .filter((p) => p.margin !== null)
+    .sort((a, b) => (a.margin ?? 0) - (b.margin ?? 0))
+    .slice(0, 8)
+    .map((p) => ({
+      ...p,
+      label: p.description.length > 22 ? p.description.slice(0, 22) + "…" : p.description,
+    }))
+
+  // ── Helpers ─────────────────────────────────────────────────────────────────
+
+  const formatCurrency = (amount: number) =>
+    new Intl.NumberFormat("es-CO", {
       style: "currency",
       currency: "COP",
       minimumFractionDigits: 0,
     }).format(amount)
-  }
 
-  const formatNumber = (num: number) => {
-    return new Intl.NumberFormat("es-CO").format(num)
+  const formatCurrencyShort = (amount: number) => {
+    if (amount >= 1_000_000) return `$${(amount / 1_000_000).toFixed(1)}M`
+    if (amount >= 1_000) return `$${(amount / 1_000).toFixed(0)}K`
+    return formatCurrency(amount)
   }
 
   const handleExportReport = () => {
     alert(`Exportando reporte en formato ${exportFormat.toUpperCase()}...`)
   }
 
-  const CustomTooltip = ({ active, payload, label }: any) => {
-    if (active && payload && payload.length) {
-      return (
-        <div className="bg-white p-3 border border-gray-200 rounded-lg shadow-lg">
-          <p className="font-medium text-gray-900">{label}</p>
-          {payload.map((entry: any, index: number) => (
-            <p key={index} className="text-sm" style={{ color: entry.color }}>
-              {entry.dataKey === "invoices" && `Facturas: ${entry.value}`}
-              {entry.dataKey === "value" && `Valor: ${formatCurrency(entry.value)}`}
-              {entry.dataKey === "volume" && `Volumen: ${formatCurrency(entry.value)}`}
-            </p>
-          ))}
-        </div>
-      )
-    }
-    return null
+  const GrowthBadge = ({ pct }: { pct: number }) => {
+    const up = pct >= 0
+    return (
+      <span className={`flex items-center text-sm ${up ? "text-green-600" : "text-red-600"}`}>
+        {up
+          ? <TrendingUp className="w-4 h-4 mr-1" />
+          : <TrendingDown className="w-4 h-4 mr-1" />}
+        {up ? "+" : ""}{pct.toFixed(1)}% vs mes anterior
+      </span>
+    )
   }
+
+  const SpendTooltip = ({ active, payload, label }: any) => {
+    if (!active || !payload?.length) return null
+    return (
+      <div className="bg-white p-3 border border-gray-200 rounded-lg shadow-lg text-sm">
+        <p className="font-semibold text-gray-900 mb-1">{label}</p>
+        {payload.map((entry: any, i: number) => (
+          <p key={i} style={{ color: entry.color }}>
+            {entry.dataKey === "value" && `Gasto: ${formatCurrency(entry.value)}`}
+            {entry.dataKey === "invoices" && `Facturas: ${entry.value}`}
+            {entry.dataKey === "volume" && `Volumen: ${formatCurrency(entry.value)}`}
+            {entry.dataKey === "margin" && `Margen: ${entry.value?.toFixed(1)}%`}
+          </p>
+        ))}
+      </div>
+    )
+  }
+
+  // ── Loading / Error ──────────────────────────────────────────────────────────
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="text-gray-500">Cargando reportes...</div>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 gap-3">
+        <p className="text-red-600">{error}</p>
+        <Button variant="outline" onClick={loadData}>Reintentar</Button>
+      </div>
+    )
+  }
+
+  // ── Render ───────────────────────────────────────────────────────────────────
 
   return (
     <div className="space-y-6">
-      {/* Header */}
+
+      {/* ── Header ── */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Reportes y Análisis</h1>
           <p className="text-gray-600">Insights y métricas de tu negocio</p>
         </div>
-
         <div className="flex flex-col sm:flex-row gap-3">
           <Select value={dateRange} onValueChange={setDateRange}>
             <SelectTrigger className="w-full sm:w-48">
@@ -204,7 +197,6 @@ export function ReportsAnalyticsPage() {
               <SelectItem value="12months">Últimos 12 meses</SelectItem>
             </SelectContent>
           </Select>
-
           <div className="flex gap-2">
             <Select value={exportFormat} onValueChange={setExportFormat}>
               <SelectTrigger className="w-24">
@@ -215,7 +207,6 @@ export function ReportsAnalyticsPage() {
                 <SelectItem value="excel">Excel</SelectItem>
               </SelectContent>
             </Select>
-
             <Button onClick={handleExportReport} className="bg-blue-600 hover:bg-blue-700">
               <Download className="w-4 h-4 mr-2" />
               Exportar
@@ -224,184 +215,272 @@ export function ReportsAnalyticsPage() {
         </div>
       </div>
 
-      {/* Key Metrics */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      {/* ── KPI Cards (4) ── */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+
+        {/* Gasto total del período */}
+        <Card>
+          <CardContent className="p-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-gray-600 mb-1">Gasto del Período</p>
+                <p className="text-2xl font-bold text-gray-900">{formatCurrencyShort(totalSpend)}</p>
+              </div>
+              <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center">
+                <ShoppingCart className="w-6 h-6 text-blue-600" />
+              </div>
+            </div>
+            <div className="mt-2">
+              <GrowthBadge pct={spendGrowth} />
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Facturas este mes */}
         <Card>
           <CardContent className="p-6">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-gray-600 mb-1">Facturas Este Mes</p>
-                <p className="text-2xl font-bold text-gray-900">{keyMetrics.invoicesThisMonth}</p>
+                <p className="text-2xl font-bold text-gray-900">{invoicesThisMonth}</p>
               </div>
-              <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center">
-                <FileText className="w-6 h-6 text-blue-600" />
+              <div className="w-12 h-12 bg-indigo-100 rounded-full flex items-center justify-center">
+                <FileText className="w-6 h-6 text-indigo-600" />
               </div>
             </div>
-            <div className="flex items-center mt-2">
-              <TrendingUp className="w-4 h-4 text-green-500 mr-1" />
-              <span className="text-sm text-green-600">+{keyMetrics.invoicesGrowth.toFixed(1)}% vs mes anterior</span>
+            <div className="mt-2">
+              <GrowthBadge pct={invoicesGrowth} />
             </div>
           </CardContent>
         </Card>
 
+        {/* Valor inventario */}
         <Card>
           <CardContent className="p-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-gray-600 mb-1">Valor Total Inventario</p>
-                <p className="text-2xl font-bold text-gray-900">{formatCurrency(keyMetrics.totalInventoryValue)}</p>
+                <p className="text-sm text-gray-600 mb-1">Valor Inventario</p>
+                <p className="text-2xl font-bold text-gray-900">{formatCurrencyShort(totalInventoryValue)}</p>
               </div>
               <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center">
                 <Package className="w-6 h-6 text-green-600" />
               </div>
             </div>
-            <div className="flex items-center mt-2">
-              <TrendingUp className="w-4 h-4 text-green-500 mr-1" />
-              <span className="text-sm text-green-600">+{keyMetrics.inventoryGrowth}% este mes</span>
+            <div className="mt-2">
+              <GrowthBadge pct={inventoryGrowth} />
             </div>
           </CardContent>
         </Card>
 
+        {/* Margen promedio */}
         <Card>
           <CardContent className="p-6">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-gray-600 mb-1">Margen Promedio</p>
-                <p className="text-2xl font-bold text-gray-900">{keyMetrics.averageMargin.toFixed(1)}%</p>
+                <p className="text-2xl font-bold text-gray-900">{averageMargin.toFixed(1)}%</p>
               </div>
               <div className="w-12 h-12 bg-orange-100 rounded-full flex items-center justify-center">
                 <DollarSign className="w-6 h-6 text-orange-600" />
               </div>
             </div>
-            <div className="flex items-center mt-2">
-              <span className="text-sm text-gray-600">Rentabilidad saludable</span>
+            <div className="mt-2">
+              <span className={`text-sm ${averageMargin >= MARGIN_TARGET ? "text-green-600" : "text-red-500"}`}>
+                {averageMargin >= MARGIN_TARGET ? "Rentabilidad saludable" : `Por debajo del objetivo (${MARGIN_TARGET}%)`}
+              </span>
             </div>
           </CardContent>
         </Card>
+
       </div>
 
-      {/* Charts Row */}
+      {/* ── Fila 1: Gasto mensual + Top proveedores ── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Monthly Invoices Chart */}
+
+        {/* Gasto mensual en compras (área) */}
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <BarChart3 className="w-5 h-5" />
-              Facturas Procesadas por Mes
+              <ShoppingCart className="w-5 h-5 text-blue-600" />
+              Gasto Mensual en Compras
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="h-80">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={monthlyInvoicesData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                  <XAxis dataKey="month" tick={{ fontSize: 12 }} />
-                  <YAxis tick={{ fontSize: 12 }} />
-                  <Tooltip content={<CustomTooltip />} />
-                  <Line
-                    type="monotone"
-                    dataKey="invoices"
-                    stroke="#4F63FF"
-                    strokeWidth={3}
-                    dot={{ fill: "#4F63FF", strokeWidth: 2, r: 4 }}
-                    activeDot={{ r: 6, stroke: "#4F63FF", strokeWidth: 2 }}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
+            {(reportsData?.monthly_invoices?.length ?? 0) === 0 ? (
+              <div className="h-72 flex items-center justify-center text-gray-400 text-sm">
+                Sin datos para el período seleccionado
+              </div>
+            ) : (
+              <div className="h-72">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={reportsData?.monthly_invoices ?? []}>
+                    <defs>
+                      <linearGradient id="gradSpend" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#4F63FF" stopOpacity={0.2} />
+                        <stop offset="95%" stopColor="#4F63FF" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                    <XAxis dataKey="month" tick={{ fontSize: 11 }} />
+                    <YAxis
+                      tick={{ fontSize: 11 }}
+                      tickFormatter={(v) => formatCurrencyShort(v)}
+                      width={64}
+                    />
+                    <Tooltip content={<SpendTooltip />} />
+                    <Area
+                      type="monotone"
+                      dataKey="value"
+                      stroke="#4F63FF"
+                      strokeWidth={2.5}
+                      fill="url(#gradSpend)"
+                      dot={{ fill: "#4F63FF", r: 3 }}
+                      activeDot={{ r: 5 }}
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            )}
           </CardContent>
         </Card>
 
-        {/* Top Suppliers Chart */}
+        {/* Top 5 proveedores */}
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <BarChart3 className="w-5 h-5" />
+              <BarChart3 className="w-5 h-5 text-indigo-600" />
               Top 5 Proveedores por Volumen
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="h-80">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={topSuppliersData} layout="horizontal">
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                  <XAxis type="number" tick={{ fontSize: 12 }} />
-                  <YAxis dataKey="name" type="category" tick={{ fontSize: 10 }} width={120} />
-                  <Tooltip content={<CustomTooltip />} />
-                  <Bar dataKey="volume" fill="#4F63FF" radius={[0, 4, 4, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
+            {(reportsData?.top_suppliers?.length ?? 0) === 0 ? (
+              <div className="h-72 flex items-center justify-center text-gray-400 text-sm">
+                Sin proveedores con facturas en este período
+              </div>
+            ) : (
+              <div className="h-72">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={reportsData?.top_suppliers ?? []} layout="vertical">
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                    <XAxis
+                      type="number"
+                      tick={{ fontSize: 11 }}
+                      tickFormatter={(v) => formatCurrencyShort(v)}
+                    />
+                    <YAxis dataKey="name" type="category" tick={{ fontSize: 10 }} width={110} />
+                    <Tooltip content={<SpendTooltip />} />
+                    <Bar dataKey="volume" fill="#6366f1" radius={[0, 4, 4, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
           </CardContent>
         </Card>
+
       </div>
 
-      {/* Best Selling Products Table */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Package className="w-5 h-5" />
-            Productos Más Vendidos
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-gray-50">
-                  <TableHead className="font-semibold">Producto</TableHead>
-                  <TableHead className="font-semibold">Categoría</TableHead>
-                  <TableHead className="font-semibold text-center">Unidades Vendidas</TableHead>
-                  <TableHead className="font-semibold text-right">Ingresos</TableHead>
-                  <TableHead className="font-semibold text-center">Margen</TableHead>
-                  <TableHead className="font-semibold">Proveedor</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {bestSellingProducts.map((product, index) => (
-                  <TableRow
-                    key={product.id}
-                    className={`${index % 2 === 0 ? "bg-white" : "bg-gray-50"} hover:bg-blue-50`}
-                  >
-                    <TableCell className="font-medium">{product.name}</TableCell>
-                    <TableCell>
-                      <span
-                        className={`px-2 py-1 rounded-full text-xs font-medium ${
-                          product.category === "Textiles"
-                            ? "bg-blue-100 text-blue-800"
-                            : product.category === "Calzado"
-                              ? "bg-green-100 text-green-800"
-                              : "bg-purple-100 text-purple-800"
-                        }`}
-                      >
-                        {product.category}
-                      </span>
-                    </TableCell>
-                    <TableCell className="text-center font-semibold">{formatNumber(product.unitsSold)}</TableCell>
-                    <TableCell className="text-right font-semibold">{formatCurrency(product.revenue)}</TableCell>
-                    <TableCell className="text-center">
-                      <span
-                        className={`px-2 py-1 rounded-full text-xs font-medium ${
-                          product.margin >= 45
-                            ? "bg-green-100 text-green-800"
-                            : product.margin >= 40
-                              ? "bg-yellow-100 text-yellow-800"
-                              : "bg-red-100 text-red-800"
-                        }`}
-                      >
-                        {product.margin.toFixed(1)}%
-                      </span>
-                    </TableCell>
-                    <TableCell className="text-sm text-gray-600">{product.supplier}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        </CardContent>
-      </Card>
+      {/* ── Fila 2: Tendencia del margen + Margen por producto ── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
 
-      {/* Summary Insights */}
+        {/* Tendencia del margen (últimos 8 meses) */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <TrendingUp className="w-5 h-5 text-green-600" />
+              Tendencia del Margen
+              <span className="ml-auto text-xs font-normal text-gray-400">Últimos 8 meses</span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {(analyticsData?.margin_trend?.length ?? 0) === 0 ? (
+              <div className="h-72 flex items-center justify-center text-gray-400 text-sm">
+                Sin datos de margen disponibles
+              </div>
+            ) : (
+              <div className="h-72">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={analyticsData?.margin_trend ?? []}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                    <XAxis dataKey="month" tick={{ fontSize: 11 }} />
+                    <YAxis
+                      tick={{ fontSize: 11 }}
+                      tickFormatter={(v) => `${v}%`}
+                      domain={[0, "auto"]}
+                      width={44}
+                    />
+                    <Tooltip content={<SpendTooltip />} />
+                    <ReferenceLine
+                      y={MARGIN_TARGET}
+                      stroke="#d97706"
+                      strokeDasharray="4 4"
+                      label={{ value: `Objetivo ${MARGIN_TARGET}%`, position: "insideTopRight", fontSize: 11, fill: "#d97706" }}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="margin"
+                      stroke="#16a34a"
+                      strokeWidth={2.5}
+                      dot={{ fill: "#16a34a", r: 3 }}
+                      activeDot={{ r: 5 }}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Margen por producto (semáforo) */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <DollarSign className="w-5 h-5 text-orange-600" />
+              Margen por Producto
+              <div className="ml-auto flex items-center gap-3 text-xs font-normal text-gray-500">
+                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-600 inline-block" />≥40%</span>
+                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-500 inline-block" />25–40%</span>
+                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-600 inline-block" />&lt;25%</span>
+              </div>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {productsWithMargin.length === 0 ? (
+              <div className="h-72 flex items-center justify-center text-gray-400 text-sm">
+                Configura precios de venta para ver el margen por producto
+              </div>
+            ) : (
+              <div className="h-72">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={productsWithMargin} layout="vertical">
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                    <XAxis
+                      type="number"
+                      tick={{ fontSize: 11 }}
+                      tickFormatter={(v) => `${v}%`}
+                      domain={[0, "auto"]}
+                    />
+                    <YAxis dataKey="label" type="category" tick={{ fontSize: 10 }} width={130} />
+                    <Tooltip content={<SpendTooltip />} />
+                    <ReferenceLine
+                      x={MARGIN_TARGET}
+                      stroke="#d97706"
+                      strokeDasharray="4 4"
+                    />
+                    <Bar dataKey="margin" radius={[0, 4, 4, 0]}>
+                      {productsWithMargin.map((entry, index) => (
+                        <Cell key={index} fill={getMarginColor(entry.margin ?? 0)} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+      </div>
+
+      {/* ── Insights del negocio ── */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -410,33 +489,51 @@ export function ReportsAnalyticsPage() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+
             <div className="bg-blue-50 p-4 rounded-lg">
-              <h4 className="font-semibold text-blue-900 mb-2">Crecimiento Sostenido</h4>
+              <h4 className="font-semibold text-blue-900 mb-2">Gasto en Compras</h4>
               <p className="text-sm text-blue-800">
-                Las facturas procesadas han aumentado un {keyMetrics.invoicesGrowth.toFixed(1)}% este mes, mostrando un
-                crecimiento constante en el volumen de negocio.
+                {totalSpend > 0
+                  ? `Gasto total en el período: ${formatCurrency(totalSpend)}. Este mes ${
+                      spendGrowth >= 0
+                        ? `aumentó un ${spendGrowth.toFixed(1)}%`
+                        : `bajó un ${Math.abs(spendGrowth).toFixed(1)}%`
+                    } vs el anterior.`
+                  : "No hay facturas registradas en el período seleccionado."}
               </p>
             </div>
 
             <div className="bg-green-50 p-4 rounded-lg">
-              <h4 className="font-semibold text-green-900 mb-2">Margen Saludable</h4>
+              <h4 className="font-semibold text-green-900 mb-2">Rentabilidad</h4>
               <p className="text-sm text-green-800">
-                El margen promedio de {keyMetrics.averageMargin.toFixed(1)}% indica una rentabilidad saludable en todos
-                los productos.
+                {averageMargin > 0
+                  ? `Margen promedio: ${averageMargin.toFixed(1)}%. ${
+                      averageMargin >= MARGIN_TARGET
+                        ? "Rentabilidad saludable — por encima del objetivo del 30%."
+                        : `Está ${(MARGIN_TARGET - averageMargin).toFixed(1)} puntos por debajo del objetivo del 30%.`
+                    }`
+                  : "Configura precios de venta en los productos para ver el margen promedio."}
               </p>
             </div>
 
             <div className="bg-orange-50 p-4 rounded-lg">
-              <h4 className="font-semibold text-orange-900 mb-2">Diversificación</h4>
+              <h4 className="font-semibold text-orange-900 mb-2">Concentración de Proveedores</h4>
               <p className="text-sm text-orange-800">
-                Los textiles lideran las ventas, pero el calzado y accesorios también contribuyen significativamente a
-                los ingresos.
+                {(reportsData?.top_suppliers?.length ?? 0) > 0
+                  ? `Proveedor principal: "${reportsData!.top_suppliers[0].name}" con ${formatCurrency(
+                      reportsData!.top_suppliers[0].volume
+                    )} en compras (${reportsData!.top_suppliers[0].invoices} factura${
+                      reportsData!.top_suppliers[0].invoices !== 1 ? "s" : ""
+                    }).`
+                  : "No hay facturas registradas con proveedores en este período."}
               </p>
             </div>
+
           </div>
         </CardContent>
       </Card>
+
     </div>
   )
 }

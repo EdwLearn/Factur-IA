@@ -1,14 +1,22 @@
 {
-  "name": "my-v0-project",
-  "version": "0.1.0",
+  "name": "@facturia/web",
+  "version": "2.0.0",
   "private": true,
   "scripts": {
-    "build": "next build",
     "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
     "lint": "next lint",
-    "start": "next start"
+    "type-check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "clean": "rm -rf .next node_modules"
   },
   "dependencies": {
+    "@facturia/shared-types": "workspace:*",
     "@hookform/resolvers": "^3.9.1",
     "@radix-ui/react-accordion": "1.2.2",
     "@radix-ui/react-alert-dialog": "1.1.4",
@@ -61,12 +69,20 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "@facturia/eslint-config": "workspace:*",
+    "@playwright/test": "^1.47.0",
+    "@testing-library/jest-dom": "^6.1.5",
+    "@testing-library/react": "^14.1.2",
+    "@testing-library/user-event": "^14.5.1",
     "@types/node": "^22",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
+    "@vitejs/plugin-react": "^4.2.1",
     "autoprefixer": "^10.4.21",
+    "jsdom": "^23.0.1",
     "postcss": "^8.5.6",
     "tailwindcss": "^3.4.17",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^1.0.4"
   }
 }

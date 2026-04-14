@@ -8,7 +8,7 @@ from databases import Database
 import logging
 import os
 
-from ..config.settings import settings
+from ..core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -72,16 +72,13 @@ async def close_database():
 async def create_tables():
     """Create all tables"""
     from .models import Base
-    
+
     async with engine.begin() as conn:
-        # Drop all tables (development only)
-        if settings.environment == "development":
-            await conn.run_sync(Base.metadata.drop_all)
-        
-        # Create all tables
+        # NOTE: Removed drop_all to preserve seeded data in development
+        # Only create tables if they don't exist
         await conn.run_sync(Base.metadata.create_all)
-        
-    logger.info("Database tables created")
+
+    logger.info("Database tables ready")
 
 # Health check
 async def check_database_health() -> bool:

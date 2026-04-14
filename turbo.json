@@ -1,0 +1,53 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "pipeline": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": [".next/**", "dist/**", "build/**"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "test": {
+      "dependsOn": ["build"],
+      "outputs": ["coverage/**"],
+      "cache": true
+    },
+    "test:unit": {
+      "outputs": ["coverage/**"],
+      "cache": true
+    },
+    "test:integration": {
+      "outputs": ["coverage/**"],
+      "cache": false
+    },
+    "test:e2e": {
+      "outputs": ["test-results/**", "playwright-report/**"],
+      "cache": false
+    },
+    "lint": {
+      "outputs": [],
+      "cache": true
+    },
+    "type-check": {
+      "outputs": [],
+      "cache": true
+    },
+    "clean": {
+      "cache": false
+    }
+  },
+  "globalEnv": [
+    "NODE_ENV",
+    "NEXT_PUBLIC_API_URL",
+    "DATABASE_URL",
+    "AWS_REGION",
+    "ENVIRONMENT"
+  ],
+  "globalDependencies": [
+    "tsconfig.json",
+    ".env",
+    ".env.local"
+  ]
+}

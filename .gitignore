@@ -4,9 +4,9 @@ __pycache__/
 *$py.class
 *.so
 .Python
-#build/
 develop-eggs/
 dist/
+build/
 downloads/
 eggs/
 .eggs/
@@ -26,7 +26,13 @@ venv/
 env/
 ENV/
 .venv/
+.virtualenv/
+
+# Environment files
 .env
+.env.local
+.env.*.local
+config/secrets/
 
 # IDE
 .vscode/
@@ -34,36 +40,101 @@ ENV/
 *.swp
 *.swo
 *~
+.project
+.classpath
+.settings/
 
 # OS
 .DS_Store
 Thumbs.db
+*.bak
 
 # Logs
 *.log
 logs/
+*.log.*
 
 # Database
 *.db
 *.sqlite3
-
-# AWS Credentials
-#.aws/
-#credentials
-
-# Local development
-#.env.local
-#.env.development
-#.env.test
+*.sql
 
 # Testing
-#.coverage
-#.pytest_cache/
-#htmlcov/
+.coverage
+.pytest_cache/
+htmlcov/
+coverage/
+coverage_html/
+coverage.xml
+.tox/
+.nox/
+.hypothesis/
+test-results/
+playwright-report/
+test-results/
 
-# Docker
-#.dockerignore
+# Node.js / Frontend
+node_modules/
+.pnp/
+.pnp.js
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Next.js
+.next/
+out/
+.vercel
+.turbo
+
+# Build outputs
+dist/
+build/
+*.tsbuildinfo
 
 # Temporary files
 tmp/
 temp/
+*.tmp
+
+# Docker
+*.dockerignore.swp
+
+# AWS
+.aws/
+credentials
+
+# ML Models cache
+/tmp/ml_models/
+*.h5
+*.pkl
+*.pth
+*.onnx
+
+# Alembic
+alembic/versions/*.pyc
+
+# Turbo
+.turbo/
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+*.tfvars
+!terraform.tfvars.example
+
+# Secrets and sensitive data
+secrets/
+*.key
+*.pem
+*.cert
+*.crt
+
+# Application specific
+uploads/
+documents/
+processed/

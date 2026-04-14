@@ -1,0 +1,200 @@
+services:
+  # Test runner service with Docker-in-Docker capability
+  test-runner:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile.test
+    container_name: facturia_test_runner
+
+    volumes:
+      # Mount workspace
+      - ..:/workspace:cached
+      # Mount Docker socket for Docker-in-Docker
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Test data volume
+      - test-data:/test-data
+      # Cache volumes for better performance
+      - pip-cache:/root/.cache/pip
+      - pnpm-cache:/root/.local/share/pnpm
+      - playwright-cache:/root/.cache/ms-playwright
+
+    environment:
+      # Testing mode
+      TESTING_MODE: "true"
+      DOCKER_BUILDKIT: "1"
+      COMPOSE_DOCKER_CLI_BUILD: "1"
+
+      # Database configuration (test environment)
+      DB_HOST: postgres-test
+      DB_PORT: 5432
+      DB_NAME: facturia_test
+      DB_USER: test_user
+      DB_PASSWORD: test_password
+
+      # Redis configuration (test environment)
+      REDIS_HOST: redis-test
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: test_redis_password
+
+      # AWS LocalStack configuration
+      AWS_ENDPOINT_URL: http://localstack-test:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_REGION: us-east-1
+      AWS_S3_BUCKET: facturia-test-documents
+
+      # API configuration
+      API_HOST: "0.0.0.0"
+      API_PORT: "8000"
+      API_WORKERS: "1"
+
+      # Frontend configuration
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+
+      # Python specific
+      PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+
+      # Node specific
+      NODE_ENV: test
+
+    networks:
+      - test-network
+
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+      redis-test:
+        condition: service_healthy
+      localstack-test:
+        condition: service_healthy
+
+    # Keep container running
+    command: sleep infinity
+
+    # Security options
+    security_opt:
+      - seccomp:unconfined
+
+    # Privileged mode for Docker-in-Docker
+    privileged: true
+
+  # PostgreSQL test database
+  postgres-test:
+    image: postgres:15-alpine
+    container_name: facturia_postgres_test
+
+    environment:
+      POSTGRES_DB: facturia_test
+      POSTGRES_USER: test_user
+      POSTGRES_PASSWORD: test_password
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+
+    ports:
+      - "5433:5432"
+
+    volumes:
+      - postgres-test-data:/var/lib/postgresql/data
+      - ../scripts/init-test-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+
+    networks:
+      - test-network
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test_user -d facturia_test"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+    # Performance tuning for testing
+    command:
+      - "postgres"
+      - "-c"
+      - "fsync=off"
+      - "-c"
+      - "synchronous_commit=off"
+      - "-c"
+      - "full_page_writes=off"
+      - "-c"
+      - "max_connections=200"
+
+  # Redis test cache
+  redis-test:
+    image: redis:7-alpine
+    container_name: facturia_redis_test
+
+    command: redis-server --requirepass test_redis_password --appendonly no --save ""
+
+    ports:
+      - "6380:6379"
+
+    volumes:
+      - redis-test-data:/data
+
+    networks:
+      - test-network
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "test_redis_password", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
+
+  # LocalStack for AWS services simulation
+  localstack-test:
+    image: localstack/localstack:latest
+    container_name: facturia_localstack_test
+
+    environment:
+      SERVICES: s3,textract,iam,logs,events
+      DEBUG: "1"
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+      DATA_DIR: /tmp/localstack/data
+      DOCKER_HOST: unix:///var/run/docker.sock
+      PERSISTENCE: "1"
+
+    ports:
+      - "4567:4566"
+      - "4572:4571"
+
+    volumes:
+      - localstack-test-data:/tmp/localstack
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ../.devcontainer/scripts/init-localstack.sh:/etc/localstack/init/ready.d/init-localstack.sh:ro
+
+    networks:
+      - test-network
+
+    healthcheck:
+      test: ["CMD-SHELL", "awslocal s3 ls || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+volumes:
+  test-data:
+    driver: local
+  postgres-test-data:
+    driver: local
+  redis-test-data:
+    driver: local
+  localstack-test-data:
+    driver: local
+  pip-cache:
+    driver: local
+  pnpm-cache:
+    driver: local
+  playwright-cache:
+    driver: local
+
+networks:
+  test-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.29.0.0/16

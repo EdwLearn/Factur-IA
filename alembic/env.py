@@ -1,7 +1,12 @@
 import os
 from logging.config import fileConfig
+from pathlib import Path
+from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool
 from alembic import context
+
+# Load .env so local dev works without DATABASE_URL set in shell
+load_dotenv(Path(__file__).parent.parent / ".env")
 
 from apps.api.src.database.models import Base
 
@@ -13,9 +18,9 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     DB_USER = os.getenv("DB_USER", "postgres")
     DB_PASSWORD = os.getenv("DB_PASSWORD", "postgres")
-    DB_HOST = os.getenv("DB_HOST", "postgres")
+    DB_HOST = os.getenv("DB_HOST", "localhost")
     DB_PORT = os.getenv("DB_PORT", "5432")
-    DB_NAME = os.getenv("DB_NAME", "document_processing")
+    DB_NAME = os.getenv("DB_NAME", "facturia_dev")
     DATABASE_URL = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 config.set_main_option("sqlalchemy.url", DATABASE_URL)
 

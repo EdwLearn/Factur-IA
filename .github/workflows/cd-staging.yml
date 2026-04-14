@@ -1,0 +1,121 @@
+name: Deploy to Staging
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY_API: facturia-api
+  ECR_REPOSITORY_WEB: facturia-web
+  ECS_CLUSTER: facturia-staging
+  ECS_SERVICE_API: api
+  ECS_SERVICE_WEB: web
+
+jobs:
+  deploy:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: https://staging.facturia.app
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push API image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build \
+            -f infrastructure/docker/api/Dockerfile \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY_API:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY_API:latest-staging \
+            .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY_API:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY_API:latest-staging
+
+      - name: Build and push Web image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build \
+            -f infrastructure/docker/web/Dockerfile \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY_WEB:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY_WEB:latest-staging \
+            --build-arg NEXT_PUBLIC_API_URL=${{ secrets.STAGING_API_URL }} \
+            .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY_WEB:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY_WEB:latest-staging
+
+      - name: Run database migrations
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+        run: |
+          pip install alembic psycopg2-binary
+          cd apps/api
+          alembic upgrade head
+
+      - name: Update ECS API service
+        run: |
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service $ECS_SERVICE_API \
+            --force-new-deployment \
+            --region $AWS_REGION
+
+      - name: Update ECS Web service
+        run: |
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service $ECS_SERVICE_WEB \
+            --force-new-deployment \
+            --region $AWS_REGION
+
+      - name: Wait for API deployment
+        run: |
+          aws ecs wait services-stable \
+            --cluster $ECS_CLUSTER \
+            --services $ECS_SERVICE_API \
+            --region $AWS_REGION
+
+      - name: Wait for Web deployment
+        run: |
+          aws ecs wait services-stable \
+            --cluster $ECS_CLUSTER \
+            --services $ECS_SERVICE_WEB \
+            --region $AWS_REGION
+
+      - name: Verify deployment
+        run: |
+          echo "Checking API health..."
+          curl -f https://staging-api.facturia.app/health || exit 1
+          echo "API is healthy!"
+
+      - name: Notify deployment success
+        if: success()
+        run: |
+          echo "✅ Staging deployment successful!"
+          echo "API: https://staging-api.facturia.app"
+          echo "Web: https://staging.facturia.app"
+
+      - name: Notify deployment failure
+        if: failure()
+        run: |
+          echo "❌ Staging deployment failed!"
+          echo "Check logs and rollback if necessary"

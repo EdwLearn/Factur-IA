@@ -87,4 +87,16 @@
   body {
     @apply bg-background text-foreground;
   }
+
+  /* Scroll suave y lento para toda la página */
+  html {
+    scroll-behavior: smooth;
+  }
+
+  /* Configuración adicional para un scroll más lento */
+  @media (prefers-reduced-motion: no-preference) {
+    html {
+      scroll-behavior: smooth;
+    }
+  }
 }

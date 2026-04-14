@@ -1,1 +1,6 @@
-{}
+{
+  "app/dashboard/page.tsx -> @/src/lib/api/endpoints/subscriptions": {
+    "id": "app/dashboard/page.tsx -> @/src/lib/api/endpoints/subscriptions",
+    "files": []
+  }
+}

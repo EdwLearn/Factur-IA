@@ -1,0 +1,109 @@
+{
+  "name": "FacturIA Testing Environment",
+  "dockerComposeFile": [
+    "docker-compose.test.yml"
+  ],
+  "service": "test-runner",
+  "workspaceFolder": "/workspace",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-python.black-formatter",
+        "ms-azuretools.vscode-docker",
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "bradlc.vscode-tailwindcss",
+        "ms-playwright.playwright"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "python.testing.pytestEnabled": true,
+        "python.testing.unittestEnabled": false,
+        "python.testing.pytestArgs": ["tests"],
+        "python.linting.enabled": true,
+        "python.linting.pylintEnabled": true,
+        "python.formatting.provider": "black",
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+          "source.organizeImports": "explicit"
+        }
+      }
+    }
+  },
+
+  "forwardPorts": [8000, 3000, 5432, 6379, 4566, 9323],
+
+  "portsAttributes": {
+    "8000": {
+      "label": "Test API",
+      "onAutoForward": "notify"
+    },
+    "3000": {
+      "label": "Test Frontend",
+      "onAutoForward": "notify"
+    },
+    "5432": {
+      "label": "Test PostgreSQL",
+      "onAutoForward": "silent"
+    },
+    "6379": {
+      "label": "Test Redis",
+      "onAutoForward": "silent"
+    },
+    "4566": {
+      "label": "Test LocalStack",
+      "onAutoForward": "silent"
+    },
+    "9323": {
+      "label": "Docker Metrics",
+      "onAutoForward": "silent"
+    }
+  },
+
+  "postCreateCommand": "bash .devcontainer/scripts/setup-test-env.sh",
+
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "version": "latest",
+      "enableNonRootDocker": "true",
+      "moby": "true"
+    },
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "20"
+    },
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.11"
+    },
+    "ghcr.io/devcontainers/features/git:1": {
+      "version": "latest"
+    },
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "installZsh": true,
+      "installOhMyZsh": true,
+      "username": "vscode",
+      "userUid": "1000",
+      "userGid": "1000"
+    }
+  },
+
+  "mounts": [
+    "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind",
+    "source=${localWorkspaceFolder}/.devcontainer/test-data,target=/test-data,type=bind"
+  ],
+
+  "remoteUser": "vscode",
+
+  "containerEnv": {
+    "TESTING_MODE": "true",
+    "DOCKER_BUILDKIT": "1",
+    "COMPOSE_DOCKER_CLI_BUILD": "1"
+  },
+
+  "initializeCommand": "bash .devcontainer/scripts/pre-init.sh",
+  "onCreateCommand": "bash .devcontainer/scripts/on-create.sh",
+  "updateContentCommand": "bash .devcontainer/scripts/update-deps.sh",
+  "postStartCommand": "bash .devcontainer/scripts/post-start.sh"
+}

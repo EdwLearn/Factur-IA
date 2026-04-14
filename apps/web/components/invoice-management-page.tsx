@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useMemo, useEffect } from "react"
+import { useRouter } from "next/navigation"
 import { facturaAPI, type InvoiceData } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -30,6 +31,7 @@ interface InvoiceManagementPageProps {
 }
 
 export function InvoiceManagementPage({ uploadedInvoices = [], invoiceStatuses = {}, setActiveTab }: InvoiceManagementPageProps) {
+  const router = useRouter()
   const [searchTerm, setSearchTerm] = useState("")
   const [statusFilter, setStatusFilter] = useState("all")
   const [vendorFilter, setVendorFilter] = useState("all")
@@ -48,17 +50,17 @@ export function InvoiceManagementPage({ uploadedInvoices = [], invoiceStatuses =
         console.log('🔄 Cargando facturas desde API...')
         
         const response = await facturaAPI.listInvoices(100, 0)
-        console.log('📊 Respuesta completa:', response)
-        
-        // Verificar estructura de respuesta
-        if (response && typeof response === 'object' && response.invoices) {
-          console.log('✅ Facturas encontradas:', response.invoices.length)
-          setInvoices(response.invoices)
-        } else if (Array.isArray(response)) {
-          console.log('✅ Respuesta es array:', response.length)
-          setInvoices(response)
+
+        if (!response.success) {
+          throw new Error(response.error?.message ?? 'Error al cargar facturas')
+        }
+
+        const data = response.data
+        if (Array.isArray(data)) {
+          setInvoices(data)
+        } else if (data && Array.isArray((data as any).invoices)) {
+          setInvoices((data as any).invoices)
         } else {
-          console.log('⚠️ Estructura de respuesta inesperada:', typeof response)
           setInvoices([])
         }
         
@@ -158,36 +160,27 @@ export function InvoiceManagementPage({ uploadedInvoices = [], invoiceStatuses =
 
   const vendors = [...new Set(invoices.map((invoice) => invoice.supplier_name).filter(Boolean))]
 
-  const handleViewDetails = async (invoiceId: string) => {
-    try {
-      // Verificar si la factura está completa
-      const status = invoiceStatuses[invoiceId]
-      if (status?.status !== 'completed') {
-        alert('⏳ La factura aún se está procesando. Intenta en unos momentos.')
-        return
-      }
-    
-      // Obtener datos de la factura
-      const invoiceData = await facturaAPI.getInvoiceData(invoiceId)
-      alert(`✅ Factura: ${invoiceData.invoice_number}\nProveedor: ${invoiceData.supplier?.company_name}\nTotal: ${formatCurrency(invoiceData.totals?.total || 0)}`)
-    } catch (error) {
-      alert('❌ Error al cargar los detalles de la factura')
-    }
+  const handleViewDetails = (invoiceId: string) => {
+    router.push(`/invoices/${invoiceId}`)
   }
 
   const handleDownloadPDF = async (invoiceId: string) => {
     try {
-      const status = invoiceStatuses[invoiceId]
-      if (status?.status !== 'completed') {
-        alert('⏳ Los datos aún se están extrayendo. Intenta en unos momentos.')
+      const res = await facturaAPI.getDownloadUrl(invoiceId)
+      if (!res.success || !res.data?.url) {
+        alert('No se pudo obtener el enlace de descarga')
         return
       }
-    
-      const pricingData = await facturaAPI.getPricingInfo(invoiceId)
-      console.log('📊 Datos de la factura:', pricingData)
-      alert(`📋 Datos disponibles:\n${pricingData.total_items} productos\nTotal: ${formatCurrency(pricingData.total_cost)}`)
+      const a = document.createElement('a')
+      a.href = res.data.url
+      a.download = res.data.filename
+      a.target = '_blank'
+      a.rel = 'noopener noreferrer'
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
     } catch (error) {
-      alert('❌ Error al obtener los datos de la factura')
+      alert('Error al descargar la factura')
     }
   }
 

@@ -64,6 +64,12 @@ jinja2==3.1.3
 # Redis (for caching)
 redis==5.0.1
 
+# Encryption (Fernet for API token storage)
+cryptography==42.0.5
+
+# Async HTTP client (Alegra API calls)
+httpx==0.27.0
+
 # Logging
 structlog==23.2.0
 

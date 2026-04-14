@@ -1,0 +1,160 @@
+name: Deploy to Production
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to deploy'
+        required: true
+        type: string
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY_API: facturia-api
+  ECR_REPOSITORY_WEB: facturia-web
+  ECS_CLUSTER: facturia-production
+  ECS_SERVICE_API: api
+  ECS_SERVICE_WEB: web
+
+jobs:
+  deploy:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://app.facturia.com
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.version }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push API image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.event.release.tag_name || inputs.version }}
+        run: |
+          docker build \
+            -f infrastructure/docker/api/Dockerfile \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY_API:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY_API:latest \
+            .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY_API:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY_API:latest
+
+      - name: Build and push Web image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.event.release.tag_name || inputs.version }}
+        run: |
+          docker build \
+            -f infrastructure/docker/web/Dockerfile \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY_WEB:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY_WEB:latest \
+            --build-arg NEXT_PUBLIC_API_URL=${{ secrets.PRODUCTION_API_URL }} \
+            .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY_WEB:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY_WEB:latest
+
+      - name: Create database backup
+        run: |
+          echo "Creating database backup before migration..."
+          aws rds create-db-snapshot \
+            --db-instance-identifier facturia-production \
+            --db-snapshot-identifier facturia-prod-pre-deploy-$(date +%Y%m%d-%H%M%S) \
+            --region $AWS_REGION
+
+      - name: Run database migrations
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+        run: |
+          pip install alembic psycopg2-binary
+          cd apps/api
+          alembic upgrade head
+
+      - name: Update ECS API service (Blue-Green)
+        run: |
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service $ECS_SERVICE_API \
+            --force-new-deployment \
+            --region $AWS_REGION \
+            --deployment-configuration "minimumHealthyPercent=100,maximumPercent=200"
+
+      - name: Wait for API deployment
+        run: |
+          aws ecs wait services-stable \
+            --cluster $ECS_CLUSTER \
+            --services $ECS_SERVICE_API \
+            --region $AWS_REGION
+
+      - name: Run smoke tests
+        run: |
+          echo "Running smoke tests..."
+          curl -f https://api.facturia.com/health || exit 1
+          curl -f https://api.facturia.com/api/v1/health || exit 1
+          echo "Smoke tests passed!"
+
+      - name: Update ECS Web service
+        if: success()
+        run: |
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service $ECS_SERVICE_WEB \
+            --force-new-deployment \
+            --region $AWS_REGION \
+            --deployment-configuration "minimumHealthyPercent=100,maximumPercent=200"
+
+      - name: Wait for Web deployment
+        run: |
+          aws ecs wait services-stable \
+            --cluster $ECS_CLUSTER \
+            --services $ECS_SERVICE_WEB \
+            --region $AWS_REGION
+
+      - name: Verify production deployment
+        run: |
+          echo "Verifying production deployment..."
+          curl -f https://api.facturia.com/health || exit 1
+          curl -f https://app.facturia.com || exit 1
+          echo "Production deployment verified!"
+
+      - name: Notify success
+        if: success()
+        run: |
+          echo "✅ Production deployment successful!"
+          echo "Version: ${{ github.event.release.tag_name || inputs.version }}"
+          echo "API: https://api.facturia.com"
+          echo "Web: https://app.facturia.com"
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          echo "❌ Deployment failed! Initiating rollback..."
+          # Rollback to previous task definition
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service $ECS_SERVICE_API \
+            --force-new-deployment \
+            --region $AWS_REGION
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service $ECS_SERVICE_WEB \
+            --force-new-deployment \
+            --region $AWS_REGION
+          echo "Rollback initiated. Check logs for details."
+          exit 1

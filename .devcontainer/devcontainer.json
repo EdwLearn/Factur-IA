@@ -1,0 +1,73 @@
+{
+  "name": "FacturIA Development Environment",
+  "dockerComposeFile": [
+    "../docker-compose.yml"
+  ],
+  "service": "api",
+  "workspaceFolder": "/app",
+
+  // Extensiones de VS Code que se instalarán automáticamente
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-azuretools.vscode-docker",
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "bradlc.vscode-tailwindcss"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "python.linting.enabled": true,
+        "python.linting.pylintEnabled": true,
+        "python.formatting.provider": "black",
+        "editor.formatOnSave": true
+      }
+    }
+  },
+
+  // Puertos que se van a exponer
+  "forwardPorts": [8000, 3000, 5432, 6379, 4566],
+
+  // Labels de los puertos
+  "portsAttributes": {
+    "8000": {
+      "label": "FastAPI Backend",
+      "onAutoForward": "notify"
+    },
+    "3000": {
+      "label": "Next.js Frontend",
+      "onAutoForward": "notify"
+    },
+    "5432": {
+      "label": "PostgreSQL",
+      "onAutoForward": "silent"
+    },
+    "6379": {
+      "label": "Redis",
+      "onAutoForward": "silent"
+    },
+    "4566": {
+      "label": "LocalStack",
+      "onAutoForward": "silent"
+    }
+  },
+
+  // Post-create commands
+  "postCreateCommand": "echo '✅ Dev Container Ready!'",
+
+  // Features adicionales
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "20"
+    },
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.11"
+    }
+  },
+
+  // Usuario remoto
+  "remoteUser": "root"
+}

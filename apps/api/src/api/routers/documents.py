@@ -10,7 +10,7 @@ import boto3
 from datetime import datetime
 import json
 
-from ...config.settings import settings
+from ...core.config import settings
 from ...services.document_processor import DocumentProcessorService
 from ...models.document import DocumentCreate, DocumentResponse, ProcessingStatus
 

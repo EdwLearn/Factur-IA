@@ -1,0 +1,84 @@
+# Base image with Python and Node
+FROM mcr.microsoft.com/devcontainers/python:3.11-bullseye
+
+# Install Node.js 20
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs
+
+# Install pnpm
+RUN npm install -g pnpm@latest
+
+# Install system dependencies
+RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
+    && apt-get install -y --no-install-recommends \
+    # Docker CLI
+    docker.io \
+    docker-compose \
+    # Build tools
+    build-essential \
+    pkg-config \
+    # Database clients
+    postgresql-client \
+    redis-tools \
+    # AWS CLI
+    awscli \
+    # Utilities
+    vim \
+    curl \
+    wget \
+    git \
+    jq \
+    htop \
+    # Cleanup
+    && apt-get autoremove -y \
+    && apt-get clean -y \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python development tools
+RUN pip install --no-cache-dir \
+    black \
+    flake8 \
+    mypy \
+    pytest \
+    pytest-asyncio \
+    pytest-cov \
+    pytest-env \
+    ipython \
+    ipdb
+
+# Install Playwright system dependencies
+RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
+    && apt-get install -y --no-install-recommends \
+    libnss3 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libasound2 \
+    libatspi2.0-0 \
+    && apt-get autoremove -y \
+    && apt-get clean -y \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /workspace
+
+# Add helpful aliases
+RUN echo 'alias ll="ls -lah"' >> /root/.bashrc \
+    && echo 'alias dc="docker-compose"' >> /root/.bashrc \
+    && echo 'alias dctest="docker-compose -f docker-compose.multitest.yml"' >> /root/.bashrc
+
+# Configure git
+RUN git config --global --add safe.directory /workspace
+
+# Default command
+CMD ["bash"]

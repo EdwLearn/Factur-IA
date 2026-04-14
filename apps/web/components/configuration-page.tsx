@@ -1,6 +1,7 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect, useCallback } from "react"
+import { apiClient } from "@/src/lib/api/client"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -37,6 +38,8 @@ import {
   Save,
   AlertTriangle,
   Info,
+  RefreshCw,
+  Loader2,
 } from "lucide-react"
 
 interface User {
@@ -88,6 +91,43 @@ export function ConfigurationPage() {
   const [activeTab, setActiveTab] = useState("company")
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false)
   const [autoSave, setAutoSave] = useState(true)
+
+  // Alegra integration state
+  const [alegraConnected, setAlegraConnected] = useState(false)
+  const [alegraConnectOpen, setAlegraConnectOpen] = useState(false)
+  const [alegraConfigOpen, setAlegraConfigOpen] = useState(false)
+  const [alegraEmail, setAlegraEmail] = useState("")
+  const [alegraToken, setAlegraToken] = useState("")
+  const [alegraConnecting, setAlegraConnecting] = useState(false)
+  const [alegraSyncing, setAlegraSyncing] = useState(false)
+  const [alegraError, setAlegraError] = useState<string | null>(null)
+  const [alegraSyncResult, setAlegraSyncResult] = useState<{ pushed: number; updated: number; pulled: number; contacts: number; errors: string[] } | null>(null)
+  const [alegraInfo, setAlegraInfo] = useState({ businessName: "", connectedAt: "", syncedItems: 0, lastSync: "" })
+
+  const loadAlegraStatus = useCallback(async () => {
+    try {
+      const res = await apiClient.get("/integrations/alegra/status")
+      if (res.success && res.data?.connected) {
+        setAlegraConnected(true)
+        setAlegraInfo({
+          businessName: res.data.email ?? "Cuenta Alegra",
+          connectedAt: res.data.connected_at
+            ? new Date(res.data.connected_at).toLocaleDateString("es-CO")
+            : "",
+          syncedItems: res.data.synced_items ?? 0,
+          lastSync: res.data.last_sync
+            ? new Date(res.data.last_sync).toLocaleString("es-CO")
+            : "",
+        })
+      }
+    } catch {
+      // Silencioso — si no hay Alegra conectado, simplemente muestra "desconectado"
+    }
+  }, [])
+
+  useEffect(() => {
+    loadAlegraStatus()
+  }, [loadAlegraStatus])
 
   const tabs = [
     { id: "company", label: "Perfil de Empresa", icon: Building2 },
@@ -344,104 +384,248 @@ export function ConfigurationPage() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          {/* Alegra */}
           <div className="flex items-center justify-between p-4 border rounded-lg">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-green-100 rounded-lg flex items-center justify-center">
-                <Settings className="w-5 h-5 text-green-600" />
+              <div
+                className={`w-10 h-10 ${alegraConnected ? "bg-orange-100" : "bg-gray-100"} rounded-lg flex items-center justify-center`}
+              >
+                <Settings className={`w-5 h-5 ${alegraConnected ? "text-orange-600" : "text-gray-600"}`} />
               </div>
               <div>
-                <h4 className="font-medium">Mayasis POS</h4>
-                <p className="text-sm text-gray-600">Sistema de punto de venta</p>
+                <h4 className="font-medium">Alegra</h4>
+                <p className="text-sm text-gray-600">
+                  {alegraConnected ? alegraInfo.businessName : "Software de facturación y contabilidad"}
+                </p>
               </div>
             </div>
             <div className="flex items-center gap-3">
-              {getStatusBadge("connected")}
-              <Button variant="outline" size="sm">
-                Configurar
-              </Button>
-            </div>
-          </div>
+              {getStatusBadge(alegraConnected ? "connected" : "disconnected")}
 
-          <div className="flex items-center justify-between p-4 border rounded-lg">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-gray-100 rounded-lg flex items-center justify-center">
-                <Settings className="w-5 h-5 text-gray-600" />
-              </div>
-              <div>
-                <h4 className="font-medium">Siigo</h4>
-                <p className="text-sm text-gray-600">Software contable</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              {getStatusBadge("disconnected")}
-              <Button variant="outline" size="sm">
-                Conectar
-              </Button>
+              {alegraConnected ? (
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="border-orange-200 text-orange-700 hover:bg-orange-50"
+                    disabled={alegraSyncing}
+                    onClick={async () => {
+                      setAlegraSyncing(true)
+                      setAlegraSyncResult(null)
+                      try {
+                        const res = await apiClient.post("/integrations/alegra/sync-items")
+                        if (!res.success) throw new Error(res.error?.message ?? "Error al sincronizar")
+                        const d = res.data
+                        setAlegraSyncResult({
+                          pushed: d?.pushed_items ?? 0,
+                          updated: d?.updated_items ?? 0,
+                          pulled: d?.pulled_items ?? 0,
+                          contacts: d?.synced_contacts ?? 0,
+                          errors: d?.errors ?? [],
+                        })
+                        setAlegraInfo((prev) => ({
+                          ...prev,
+                          syncedItems: d?.synced_items ?? prev.syncedItems,
+                          lastSync: d?.synced_at
+                            ? new Date(d.synced_at).toLocaleString("es-CO")
+                            : prev.lastSync,
+                        }))
+                      } catch (err) {
+                        setAlegraSyncResult({
+                          pushed: 0, updated: 0, pulled: 0, contacts: 0,
+                          errors: [err instanceof Error ? err.message : "Error desconocido"],
+                        })
+                      } finally {
+                        setAlegraSyncing(false)
+                      }
+                    }}
+                  >
+                    {alegraSyncing ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <RefreshCw className="w-4 h-4" />
+                    )}
+                    <span className="ml-1.5">{alegraSyncing ? "Sincronizando..." : "Sincronizar"}</span>
+                  </Button>
+                  <Dialog open={alegraConfigOpen} onOpenChange={setAlegraConfigOpen}>
+                    <DialogTrigger asChild>
+                      <Button variant="outline" size="sm">
+                        Configurar
+                      </Button>
+                    </DialogTrigger>
+                    <DialogContent>
+                      <DialogHeader>
+                        <DialogTitle>Alegra — Configuración</DialogTitle>
+                      </DialogHeader>
+                      <div className="space-y-4">
+                        <div className="space-y-1">
+                          <p className="text-sm font-medium text-gray-700">Cuenta</p>
+                          <p className="text-sm text-gray-900">{alegraInfo.businessName}</p>
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-sm font-medium text-gray-700">Conectado desde</p>
+                          <p className="text-sm text-gray-900">{alegraInfo.connectedAt}</p>
+                        </div>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="bg-gray-50 rounded-lg p-3">
+                            <p className="text-xs text-gray-500">Ítems en Alegra</p>
+                            <p className="text-lg font-bold text-gray-900">{alegraInfo.syncedItems}</p>
+                          </div>
+                          <div className="bg-gray-50 rounded-lg p-3">
+                            <p className="text-xs text-gray-500">Última sync</p>
+                            <p className="text-sm font-medium text-gray-900">{alegraInfo.lastSync || "—"}</p>
+                          </div>
+                        </div>
+                        {alegraSyncResult && (
+                          <div className="bg-blue-50 rounded-lg p-3 text-sm">
+                            <p className="font-medium text-gray-700 mb-2">Último resultado</p>
+                            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-gray-600">
+                              <span>Creados en Alegra</span>
+                              <span className="font-medium text-green-700">+{alegraSyncResult.pushed}</span>
+                              <span>Actualizados en Alegra</span>
+                              <span className="font-medium text-blue-700">{alegraSyncResult.updated}</span>
+                              <span>Precios recibidos</span>
+                              <span className="font-medium text-purple-700">{alegraSyncResult.pulled}</span>
+                              <span>Contactos</span>
+                              <span className="font-medium text-orange-700">{alegraSyncResult.contacts}</span>
+                            </div>
+                            {alegraSyncResult.errors.length > 0 && (
+                              <div className="mt-2 pt-2 border-t border-blue-200">
+                                <p className="text-xs text-red-600 font-medium">{alegraSyncResult.errors.length} error(es):</p>
+                                <ul className="text-xs text-red-500 mt-1 space-y-0.5 max-h-20 overflow-y-auto">
+                                  {alegraSyncResult.errors.map((e, i) => (
+                                    <li key={i} className="truncate">• {e}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        <Separator />
+                        <Button
+                          variant="outline"
+                          className="w-full text-red-600 hover:text-red-700 border-red-200 hover:border-red-300"
+                          onClick={async () => {
+                            await apiClient.delete("/integrations/alegra/disconnect")
+                            setAlegraConnected(false)
+                            setAlegraInfo({ businessName: "", connectedAt: "", syncedItems: 0, lastSync: "" })
+                            setAlegraSyncResult(null)
+                            setAlegraConfigOpen(false)
+                          }}
+                        >
+                          <Trash2 className="w-4 h-4 mr-2" />
+                          Desconectar
+                        </Button>
+                      </div>
+                    </DialogContent>
+                  </Dialog>
+                </div>
+              ) : (
+                <Dialog
+                  open={alegraConnectOpen}
+                  onOpenChange={(open) => {
+                    setAlegraConnectOpen(open)
+                    setAlegraError(null)
+                    if (!open) {
+                      setAlegraEmail("")
+                      setAlegraToken("")
+                    }
+                  }}
+                >
+                  <DialogTrigger asChild>
+                    <Button variant="outline" size="sm">
+                      Conectar
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Conectar con Alegra</DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-4">
+                      <div>
+                        <Label htmlFor="alegra-email">Email de tu cuenta Alegra</Label>
+                        <Input
+                          id="alegra-email"
+                          type="email"
+                          placeholder="tu@empresa.com"
+                          value={alegraEmail}
+                          onChange={(e) => setAlegraEmail(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <Label htmlFor="alegra-token">Token de API</Label>
+                        <Input
+                          id="alegra-token"
+                          type="password"
+                          placeholder="Pega tu token aquí"
+                          value={alegraToken}
+                          onChange={(e) => setAlegraToken(e.target.value)}
+                        />
+                        <p className="text-xs text-gray-500 mt-1">
+                          Encuéntralo en Alegra → Configuración → Integraciones → Integración manual API
+                        </p>
+                      </div>
+                      {alegraError && (
+                        <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+                          <p className="text-sm text-red-700">{alegraError}</p>
+                        </div>
+                      )}
+                      <Button
+                        className="w-full bg-blue-600 hover:bg-blue-700"
+                        disabled={alegraConnecting || !alegraEmail.trim() || !alegraToken.trim()}
+                        onClick={async () => {
+                          setAlegraConnecting(true)
+                          setAlegraError(null)
+                          try {
+                            const res = await apiClient.post("/integrations/alegra/connect", {
+                              email: alegraEmail,
+                              token: alegraToken,
+                            })
+                            if (!res.success) {
+                              const detail = (res.error as any)?.detail ?? res.error?.message
+                              const msg =
+                                typeof detail === "string"
+                                  ? detail
+                                  : Array.isArray(detail)
+                                  ? detail.map((d: any) => d.msg ?? JSON.stringify(d)).join(", ")
+                                  : "No se pudo conectar con Alegra"
+                              throw new Error(msg)
+                            }
+                            const data = res.data
+                            setAlegraInfo({
+                              businessName: data.user?.email ?? "Cuenta Alegra",
+                              connectedAt: data.connected_at
+                                ? new Date(data.connected_at).toLocaleDateString("es-CO")
+                                : new Date().toLocaleDateString("es-CO"),
+                              syncedItems: 0,
+                            })
+                            setAlegraConnected(true)
+                            setAlegraConnectOpen(false)
+                          } catch (err: unknown) {
+                            setAlegraError(err instanceof Error ? err.message : "Error desconocido")
+                          } finally {
+                            setAlegraConnecting(false)
+                          }
+                        }}
+                      >
+                        {alegraConnecting ? (
+                          <>
+                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                            Validando...
+                          </>
+                        ) : (
+                          "Conectar"
+                        )}
+                      </Button>
+                    </div>
+                  </DialogContent>
+                </Dialog>
+              )}
             </div>
           </div>
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Configuración de Email</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <Label htmlFor="smtp-server">Servidor SMTP</Label>
-              <Input id="smtp-server" defaultValue="smtp.gmail.com" />
-            </div>
-            <div>
-              <Label htmlFor="smtp-port">Puerto</Label>
-              <Input id="smtp-port" defaultValue="587" />
-            </div>
-            <div>
-              <Label htmlFor="smtp-user">Usuario</Label>
-              <Input id="smtp-user" defaultValue="facturas@almacenmedellinja.com" />
-            </div>
-            <div>
-              <Label htmlFor="smtp-password">Contraseña</Label>
-              <Input id="smtp-password" type="password" defaultValue="••••••••" />
-            </div>
-          </div>
-          <Button variant="outline">
-            <CheckCircle className="w-4 h-4 mr-2" />
-            Probar Conexión
-          </Button>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>AWS Textract</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <Label htmlFor="aws-region">Región</Label>
-              <Select defaultValue="us-east-1">
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="us-east-1">US East (N. Virginia)</SelectItem>
-                  <SelectItem value="us-west-2">US West (Oregon)</SelectItem>
-                  <SelectItem value="sa-east-1">South America (São Paulo)</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <Label htmlFor="aws-key">Access Key ID</Label>
-              <Input id="aws-key" defaultValue="AKIA••••••••••••••••" />
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            {getStatusBadge("connected")}
-            <span className="text-sm text-gray-600">Última sincronización: hace 2 horas</span>
-          </div>
-        </CardContent>
-      </Card>
     </div>
   )
 

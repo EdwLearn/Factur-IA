@@ -74,9 +74,10 @@ class IntelligentProductMatcher:
                                 threshold: float) -> List[Dict]:
         """Semantic similarity using embeddings"""
         
-        # Get embeddings
+        # Get embeddings — run in thread so the event loop is not blocked by
+        # CPU-bound SentenceTransformer inference.
         descriptions = [new_description] + [p.get('description', '') for p in existing_products]
-        embeddings = self.model.encode(descriptions)
+        embeddings = await asyncio.to_thread(self.model.encode, descriptions)
         
         new_embedding = embeddings[0]
         existing_embeddings = embeddings[1:]

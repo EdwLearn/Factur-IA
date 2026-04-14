@@ -1,0 +1,165 @@
+# Docker Compose para Simular Múltiples Máquinas de Testing
+# Uso: docker-compose -f docker-compose.multitest.yml up
+
+version: '3.8'
+
+services:
+  # Máquina de Testing 1 - Simulación de cliente Windows
+  test-client-windows:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/web/Dockerfile
+    container_name: facturia-test-windows
+    hostname: windows-client
+    environment:
+      - NODE_ENV=test
+      - NEXT_PUBLIC_API_URL=http://test-server:8000/api/v1
+      - SIMULATED_OS=windows
+    networks:
+      test-network:
+        ipv4_address: 172.28.0.10
+    depends_on:
+      - test-server
+    ports:
+      - "3001:3000"  # Puerto diferente para no conflictuar
+    command: npm run dev
+
+  # Máquina de Testing 2 - Simulación de cliente Mac
+  test-client-mac:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/web/Dockerfile
+    container_name: facturia-test-mac
+    hostname: mac-client
+    environment:
+      - NODE_ENV=test
+      - NEXT_PUBLIC_API_URL=http://test-server:8000/api/v1
+      - SIMULATED_OS=macos
+    networks:
+      test-network:
+        ipv4_address: 172.28.0.11
+    depends_on:
+      - test-server
+    ports:
+      - "3002:3000"  # Puerto diferente
+    command: npm run dev
+
+  # Máquina de Testing 3 - Simulación de cliente Linux
+  test-client-linux:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/web/Dockerfile
+    container_name: facturia-test-linux
+    hostname: linux-client
+    environment:
+      - NODE_ENV=test
+      - NEXT_PUBLIC_API_URL=http://test-server:8000/api/v1
+      - SIMULATED_OS=linux
+    networks:
+      test-network:
+        ipv4_address: 172.28.0.12
+    depends_on:
+      - test-server
+    ports:
+      - "3003:3000"  # Puerto diferente
+    command: npm run dev
+
+  # Servidor de Backend (compartido)
+  test-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: facturia-test-server
+    hostname: test-server
+    env_file: .env
+    environment:
+      - ENVIRONMENT=test
+      - DB_HOST=test-postgres
+      - REDIS_HOST=test-redis
+      - AWS_ENDPOINT_URL=http://test-localstack:4566
+      - CORS_ORIGINS=["http://172.28.0.10:3000","http://172.28.0.11:3000","http://172.28.0.12:3000"]
+    networks:
+      test-network:
+        ipv4_address: 172.28.0.20
+    ports:
+      - "8001:8000"
+    depends_on:
+      test-postgres:
+        condition: service_healthy
+      test-redis:
+        condition: service_healthy
+
+  # Base de datos de testing
+  test-postgres:
+    image: postgres:15-alpine
+    container_name: facturia-test-postgres
+    hostname: test-postgres
+    environment:
+      POSTGRES_DB: facturia_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    networks:
+      test-network:
+        ipv4_address: 172.28.0.30
+    ports:
+      - "5433:5432"
+    volumes:
+      - test_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Redis de testing
+  test-redis:
+    image: redis:7-alpine
+    container_name: facturia-test-redis
+    hostname: test-redis
+    networks:
+      test-network:
+        ipv4_address: 172.28.0.31
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # LocalStack de testing
+  test-localstack:
+    image: localstack/localstack:latest
+    container_name: facturia-test-localstack
+    hostname: test-localstack
+    environment:
+      SERVICES: s3,textract
+      DEBUG: 1
+    networks:
+      test-network:
+        ipv4_address: 172.28.0.32
+    ports:
+      - "4567:4566"
+
+  # Monitor de red (opcional - para debugging)
+  network-monitor:
+    image: nicolaka/netshoot
+    container_name: facturia-network-monitor
+    hostname: network-monitor
+    networks:
+      test-network:
+        ipv4_address: 172.28.0.100
+    command: sleep infinity
+    tty: true
+
+networks:
+  test-network:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.0.0/16
+          gateway: 172.28.0.1
+
+volumes:
+  test_postgres_data:

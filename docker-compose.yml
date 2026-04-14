@@ -40,17 +40,14 @@ services:
       - "4566:4566"
       - "4571:4571"
     environment:
-      SERVICES: s3,iam,logs,events
-      DEBUG: "1"
+      SERVICES: s3
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
       AWS_DEFAULT_REGION: ${AWS_REGION}
-      DATA_DIR: /tmp/localstack/data
-      DOCKER_HOST: unix:///var/run/docker.sock
     volumes:
       - "./scripts/localstack:/etc/localstack/init/ready.d"
-      - "/var/run/docker.sock:/var/run/docker.sock"
-      - localstack_data:/tmp/localstack
+    tmpfs:
+      - /tmp/localstack
     networks: [document_processing]
     healthcheck:
       test: ["CMD-SHELL", "awslocal s3 ls || exit 1"]

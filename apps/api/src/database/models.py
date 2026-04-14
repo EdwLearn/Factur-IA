@@ -20,13 +20,15 @@ class Tenant(Base):
     nit = Column(String(50))
     email = Column(String(255), nullable=False)
     phone = Column(String(50))
-    plan = Column(String(50), default="freemium")  # freemium, basic, premium
+    plan = Column(String(50), default="freemium")  # freemium, basic, pro
     invoices_processed_month = Column(Integer, default=0)
-    max_invoices_month = Column(Integer, default=10)
+    billing_period_start = Column(DateTime, default=datetime.utcnow)
+    max_invoices_month = Column(Integer, default=10)  # kept for backwards compat, use plans.py
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     is_active = Column(Boolean, default=True)
-    
+    password_hash = Column(String(255), nullable=True)
+
     # Relationships
     invoices = relationship("ProcessedInvoice", back_populates="tenant", cascade="all, delete-orphan")
     billing_records = relationship("BillingRecord", back_populates="tenant")
@@ -90,7 +92,11 @@ class ProcessedInvoice(Base):
     subtotal = Column(Numeric(15, 2))
     iva_rate = Column(Numeric(5, 2))
     iva_amount = Column(Numeric(15, 2))
-    retenciones = Column(Numeric(15, 2))
+    # Retenciones DIAN
+    rete_renta = Column(Numeric(15, 2))       # Retención en la Fuente
+    rete_iva = Column(Numeric(15, 2))         # Retención de IVA
+    rete_ica = Column(Numeric(15, 2))         # Retención ICA (industria y comercio)
+    total_retenciones = Column(Numeric(15, 2))  # Suma de las 3
     total_amount = Column(Numeric(15, 2), index=True)
     total_items = Column(Integer)
     
@@ -109,7 +115,11 @@ class ProcessedInvoice(Base):
     line_items = relationship("InvoiceLineItem", back_populates="invoice", cascade="all, delete-orphan")
     
     pricing_status = Column(String(50), default="not_required", nullable=True)
-    
+
+    # Alegra sync result
+    alegra_sync_status = Column(String(50), nullable=True)   # "synced" | "failed" | "pending" | null
+    alegra_error = Column(Text, nullable=True)               # error message if POST /bills failed
+
     # Indexes for performance
     __table_args__ = (
         Index('idx_tenant_status', 'tenant_id', 'status'),
@@ -136,10 +146,15 @@ class InvoiceLineItem(Base):
     quantity = Column(Numeric(15, 4), nullable=False)
     unit_price = Column(Numeric(15, 2), nullable=False)
     subtotal = Column(Numeric(15, 2), nullable=False)
+    iva_rate = Column(Numeric(5, 2), nullable=True)   # IVA % de esta línea (0, 5, 19...)
     
+    # FK to product catalog (nullable: not all line items match a known product)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=True, index=True)
+
     # Relationships
     invoice = relationship("ProcessedInvoice", back_populates="line_items")
-    
+    product = relationship("Product")
+
     sale_price = Column(Numeric(15, 2), nullable=True)
     markup_percentage = Column(Numeric(5, 2), nullable=True)  
     is_priced = Column(Boolean, default=False, nullable=False)
@@ -188,17 +203,42 @@ class Supplier(Base):
     phone = Column(String(50))
     email = Column(String(255))
     
+    # Alegra integration
+    alegra_contact_id = Column(String(100), nullable=True, index=True)  # ID del contacto en Alegra
+
     # Analytics
     total_invoices = Column(Integer, default=0)
     total_amount = Column(Numeric(15, 2), default=0)
     last_invoice_date = Column(Date)
-    
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
+
     __table_args__ = (
         Index('idx_supplier_nit_tenant', 'nit', 'tenant_id'),
     )
+
+
+class AlegraConnection(Base):
+    """Credenciales de integración con Alegra por tenant"""
+    __tablename__ = "alegra_connections"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(String(100), ForeignKey("tenants.tenant_id"), nullable=False, unique=True)
+
+    # Auth — el token se guarda encriptado en la aplicación antes de persistir
+    alegra_token = Column(Text, nullable=False)          # Base64(AES(user:token))
+    alegra_user_email = Column(String(255), nullable=False)
+    alegra_company_name = Column(String(255), nullable=True)
+
+    # Estado
+    is_active = Column(Boolean, default=True, nullable=False)
+    connected_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_sync_at = Column(DateTime, nullable=True)
+
+    # Relationship
+    tenant = relationship("Tenant")
+
 
 class Product(Base):
     """Product catalog for inventory management"""
@@ -211,12 +251,28 @@ class Product(Base):
     description = Column(Text, nullable=False)
     reference = Column(String(255))
     unit_measure = Column(String(50), default="UNIDAD")
-    
+
+    # Categorization
+    category = Column(String(100))
+    supplier_name = Column(String(255))     # Denormalizado para display rápido (sin JOIN)
+    supplier_id = Column(UUID(as_uuid=True), ForeignKey("suppliers.id"), nullable=True, index=True)
+
+    # Alegra integration
+    alegra_item_id = Column(String(100), nullable=True, index=True)  # ID del ítem en Alegra
+    alegra_synced_at = Column(DateTime, nullable=True)               # Última sincronización
+
+    # Relationships
+    supplier = relationship("Supplier")
+
     # Inventory
     current_stock = Column(Numeric(15, 4), default=0)
     min_stock = Column(Numeric(15, 4), default=0)
     max_stock = Column(Numeric(15, 4))
-    
+    quantity = Column(Integer, default=0)  # Current quantity for dashboard charts
+
+    # Pricing
+    sale_price = Column(Numeric(15, 2), nullable=True)  # Current sale price
+
     # Analytics
     total_purchased = Column(Numeric(15, 4), default=0)
     total_amount = Column(Numeric(15, 2), default=0)
