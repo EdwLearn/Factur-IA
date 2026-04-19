@@ -1,0 +1,28 @@
+[build]
+builder = "dockerfile"
+
+# ── API service ───────────────────────────────────────────────────────────────
+# source = "." so the build context is the project root (needed for alembic/)
+[[services]]
+name = "api"
+source = "."
+dockerfilePath = "apps/api/Dockerfile"
+
+[services.deploy]
+startCommand = "./apps/api/entrypoint.sh"
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "on_failure"
+
+# ── Web service ───────────────────────────────────────────────────────────────
+# source = "." so the build context includes packages/ (workspace deps)
+[[services]]
+name = "web"
+source = "."
+dockerfilePath = "apps/web/Dockerfile"
+
+[services.deploy]
+startCommand = "node server.js"
+healthcheckPath = "/"
+healthcheckTimeout = 30
+restartPolicyType = "on_failure"

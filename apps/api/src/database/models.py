@@ -120,6 +120,10 @@ class ProcessedInvoice(Base):
     alegra_sync_status = Column(String(50), nullable=True)   # "synced" | "failed" | "pending" | null
     alegra_error = Column(Text, nullable=True)               # error message if POST /bills failed
 
+    # Tipo de documento detectado automáticamente
+    document_type = Column(String(50), nullable=False, server_default='factura')
+    # Valores posibles: 'factura', 'remision', 'desconocido'
+
     # Indexes for performance
     __table_args__ = (
         Index('idx_tenant_status', 'tenant_id', 'status'),

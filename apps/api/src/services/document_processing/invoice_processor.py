@@ -2,10 +2,11 @@
 Invoice processing service with REAL Textract - FIXED
 """
 import asyncio
+import json
 import logging
 import uuid
 from typing import Dict, Any, Optional, List
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from decimal import Decimal
 from sqlalchemy import select, update, delete, func
 from sqlalchemy.orm import selectinload
@@ -15,7 +16,7 @@ from fastapi import HTTPException
 
 from ...core.config import settings
 from ...database.connection import AsyncSessionFactory
-from ...database.models import ProcessedInvoice, InvoiceLineItem, Tenant, BillingRecord
+from ...database.models import ProcessedInvoice, InvoiceLineItem, Tenant, BillingRecord, Supplier
 from ...models.invoice import (
     InvoiceData, InvoiceStatus, InvoiceType,
     SupplierInfo, CustomerInfo, InvoiceLineItem as InvoiceLineItemModel, 
@@ -84,6 +85,11 @@ class InvoiceProcessorService:
                     else 'application/pdf' if filename.lower().endswith('.pdf')
                     else 'image/jpeg'
                 )
+
+                # Rotar imagen antes de subir a S3 (solo path Textract — imágenes/fotos)
+                if not is_xml and not is_digital:
+                    file_content = self.textract_service._auto_rotate_image(file_content)
+
                 self.textract_service.s3_client.put_object(
                     Bucket=settings.s3_document_bucket,
                     Key=s3_key,
@@ -179,6 +185,12 @@ class InvoiceProcessorService:
                     logger.error(f"Extraction failed for {invoice_id}: {extraction_error}")
                     raise
                 
+                # Clasificar tipo de documento antes de persistir
+                from .document_classifier import DocumentClassifier
+                full_text = extracted_data.get("full_text", "")
+                invoice.document_type = DocumentClassifier.classify_document(full_text)
+                logger.info(f"Documento clasificado como: {invoice.document_type} ({invoice_id})")
+
                 # Update invoice with extracted data
                 invoice.status = "completed"
                 invoice.completion_timestamp = datetime.utcnow()
@@ -200,6 +212,18 @@ class InvoiceProcessorService:
                 invoice.supplier_city = self._safe_extract(supplier, "city")
                 invoice.supplier_department = self._safe_extract(supplier, "department")
                 invoice.supplier_phone = self._safe_extract(supplier, "phone")
+
+                # Upsert proveedor en tabla suppliers (clave: NIT + tenant)
+                supplier_record = await self._upsert_supplier(
+                    session=session,
+                    tenant_id=invoice.tenant_id,
+                    nit=invoice.supplier_nit,
+                    name=invoice.supplier_name,
+                    extra_data=supplier,
+                )
+                if supplier_record:
+                    invoice.supplier_nit = supplier_record.nit
+                    invoice.supplier_name = supplier_record.company_name
                 
                 # Customer info
                 customer = extracted_data.get("customer") or {}
@@ -316,6 +340,46 @@ class InvoiceProcessorService:
                 except Exception as save_error:
                     logger.error(f"Could not save error status: {str(save_error)}")
     
+    async def _upsert_supplier(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        nit: str,
+        name: str,
+        extra_data: dict = None
+    ) -> Optional[object]:
+        """Busca el proveedor por NIT + tenant_id. Si existe actualiza nombre si cambió. Si no existe crea nuevo."""
+        if not nit:
+            return None
+
+        result = await session.execute(
+            select(Supplier).where(
+                Supplier.nit == nit,
+                Supplier.tenant_id == tenant_id
+            )
+        )
+        supplier = result.scalar_one_or_none()
+
+        if supplier:
+            if name and supplier.company_name != name:
+                supplier.company_name = name
+                session.add(supplier)
+            return supplier
+
+        supplier = Supplier(
+            tenant_id=tenant_id,
+            nit=nit,
+            company_name=name or "",
+            city=extra_data.get("city") if extra_data else None,
+            phone=extra_data.get("phone") if extra_data else None,
+            address=extra_data.get("address") if extra_data else None,
+            department=extra_data.get("department") if extra_data else None,
+        )
+        session.add(supplier)
+        await session.flush()
+        logger.info(f"Nuevo proveedor creado: {nit} - {name}")
+        return supplier
+
     def _safe_extract(self, data: Dict, key: str) -> Optional[str]:
         """Safely extract string value"""
         if not data or not isinstance(data, dict):
@@ -476,6 +540,7 @@ class InvoiceProcessorService:
                 return InvoiceData(
                     invoice_number=invoice.invoice_number,
                     invoice_type=InvoiceType(invoice.invoice_type) if invoice.invoice_type else None,
+                    document_type=getattr(invoice, 'document_type', 'factura'),
                     issue_date=invoice.issue_date,
                     due_date=invoice.due_date,
                     supplier=SupplierInfo(
@@ -545,6 +610,7 @@ class InvoiceProcessorService:
             try:
                 query = (
                     select(ProcessedInvoice)
+                    .options(selectinload(ProcessedInvoice.line_items))
                     .where(ProcessedInvoice.tenant_id == tenant_id)
                     .order_by(ProcessedInvoice.upload_timestamp.desc())
                     .offset(offset)
@@ -588,6 +654,18 @@ class InvoiceProcessorService:
                 logger.error(f"Error deleting invoice: {str(e)}")
                 return False
     
+    def _resolve_total(self, invoice: ProcessedInvoice) -> Optional[float]:
+        """Return total_amount from DB when valid; otherwise compute from line items."""
+        stored = float(invoice.total_amount) if invoice.total_amount is not None else None
+        if stored and stored > 0:
+            return stored
+        # Fallback: sum subtotals from line items (mirrors what the detail page does)
+        if invoice.line_items:
+            computed = sum(float(item.subtotal or 0) for item in invoice.line_items)
+            if computed > 0:
+                return computed
+        return stored  # return 0.0 or None as-is if no line items either
+
     def _convert_to_pydantic(self, invoice: ProcessedInvoice) -> ProcessedInvoiceModel:
         return ProcessedInvoiceModel(
             id=str(invoice.id),
@@ -605,7 +683,7 @@ class InvoiceProcessorService:
             invoice_number=invoice.invoice_number,
             supplier_name=invoice.supplier_name,
             supplier_nit=invoice.supplier_nit,
-            total_amount=float(invoice.total_amount) if invoice.total_amount else None,
+            total_amount=self._resolve_total(invoice),
             issue_date=invoice.issue_date,
         )
 
@@ -920,6 +998,18 @@ class InvoiceProcessorService:
                 # ── 3. Update inventory ───────────────────────────────────
                 inventory_updates = []
                 for item in priced_items:
+                    if not item.product_code:
+                        logger.warning(
+                            f"Skipping inventory update for item without product_code: "
+                            f"description='{item.description}', invoice={invoice_id}"
+                        )
+                        inventory_updates.append({
+                            "action": "skipped_no_code",
+                            "description": item.description,
+                            "reason": "product_code is null",
+                        })
+                        continue
+
                     product_result = await session.execute(
                         select(Product)
                         .where(Product.product_code == item.product_code)
@@ -974,6 +1064,25 @@ class InvoiceProcessorService:
                 )
                 await session.commit()
 
+                # ── 5a. Guard: remisiones no generan bill en Alegra ──────
+                if getattr(invoice_record, 'document_type', None) == "remision":
+                    await session.execute(
+                        update(ProcessedInvoice)
+                        .where(ProcessedInvoice.id == uuid.UUID(invoice_id))
+                        .values(alegra_sync_status="skipped_remision")
+                    )
+                    await session.commit()
+                    return {
+                        "status": "confirmed",
+                        "document_type": "remision",
+                        "message": "Entrada de inventario registrada. No se creó factura en Alegra.",
+                        "inventory_updated": True,
+                        "total_items": len(priced_items),
+                        "inventory_updates": inventory_updates,
+                        "alegra_bill": None,
+                        "alegra_synced": False,
+                    }
+
                 # ── 5. Try Alegra POST /bills (non-blocking) ─────────────
                 alegra_bill = None
                 try:
@@ -992,46 +1101,115 @@ class InvoiceProcessorService:
                             else datetime.utcnow().strftime("%Y-%m-%d")
                         )
                         # ── MAPPING 1: supplier_nit → alegra_contact_id ───
-                        contact_payload: Dict[str, Any] = {}
-                        if invoice_record and invoice_record.supplier_nit:
+                        from ...services.integrations.alegra_integration import IVA_RATE_TO_ALEGRA_ID, _DEFAULT_TAX_ID
+                        supplier_row = None
+                        supplier_nit = invoice_record.supplier_nit if invoice_record else None
+                        supplier_name = (invoice_record.supplier_name or "Proveedor") if invoice_record else "Proveedor"
+
+                        if supplier_nit:
                             supplier_result = await session.execute(
                                 select(Supplier)
-                                .where(Supplier.nit == invoice_record.supplier_nit)
+                                .where(Supplier.nit == supplier_nit)
                                 .where(Supplier.tenant_id == tenant_id)
                             )
                             supplier_row = supplier_result.scalar_one_or_none()
-                            if supplier_row and supplier_row.alegra_contact_id:
-                                contact_payload = {"id": int(supplier_row.alegra_contact_id)}
-                                logger.info(f"Alegra contact resolved: {supplier_row.alegra_contact_id}")
-                            elif invoice_record.supplier_name:
-                                contact_payload = {"name": invoice_record.supplier_name}
-                        elif invoice_record and invoice_record.supplier_name:
-                            contact_payload = {"name": invoice_record.supplier_name}
 
-                        # ── MAPPING 2: product_code → alegra_item_id ──────
+                        logger.info(f"SUPPLIER NIT: {supplier_nit}")
+                        logger.info(f"SUPPLIER NAME: {supplier_name}")
+
+                        # Usar alegra_contact_id ya guardado, o buscar/crear por NIT
+                        if supplier_row and supplier_row.alegra_contact_id:
+                            contact_id = str(supplier_row.alegra_contact_id)
+                            logger.info(f"Contact en caché (BD): {contact_id}")
+                        elif supplier_nit:
+                            contact_id = await client.get_or_create_contact(
+                                nit=supplier_nit,
+                                name=supplier_name,
+                            )
+                            if supplier_row:
+                                supplier_row.alegra_contact_id = contact_id
+                                session.add(supplier_row)
+                        else:
+                            # Sin NIT no podemos buscar/crear contacto confiablemente
+                            raise ValueError(f"Factura sin NIT de proveedor — no se puede crear bill en Alegra")
+
+                        logger.info(f"PROVIDER ID enviado a Alegra: {contact_id}")
+                        provider_payload: Dict[str, Any] = {"id": contact_id}
+
+                        # ── MAPPING 2: bill items — requiere id de catálogo Alegra ──
                         bill_items = []
                         for item in priced_items:
-                            item_payload: Dict[str, Any] = {
-                                "name": item.description or item.product_code,
+                            iva_rate = item.iva_rate or (invoice_record.iva_rate if invoice_record else None)
+                            rate_key = int(float(iva_rate)) if iva_rate is not None else None
+                            tax_payload = [{"id": IVA_RATE_TO_ALEGRA_ID.get(rate_key, _DEFAULT_TAX_ID)}]
+
+                            # Buscar producto en BD para obtener alegra_item_id
+                            alegra_item_id = None
+                            if item.product_code:
+                                product_result = await session.execute(
+                                    select(Product)
+                                    .where(Product.product_code == item.product_code)
+                                    .where(Product.tenant_id == tenant_id)
+                                )
+                                product_row = product_result.scalar_one_or_none()
+                                if product_row:
+                                    alegra_item_id = product_row.alegra_item_id
+
+                            # Si no tiene id en Alegra, crear o recuperar por referencia
+                            if not alegra_item_id and item.product_code:
+                                sale_price = float(item.sale_price) if item.sale_price else float(item.unit_price)
+                                try:
+                                    new_item = await client.create_item({
+                                        "name": (item.description or item.product_code)[:255],
+                                        "reference": item.product_code,
+                                        "type": "product",
+                                        "price": [{"idPriceList": 1, "price": sale_price}],
+                                    })
+                                    alegra_item_id = str(new_item.get("id"))
+                                    logger.info(f"Alegra item creado: {alegra_item_id} para {item.product_code}")
+                                except Exception as create_exc:
+                                    # code 1009 = referencia duplicada → buscar el ítem existente
+                                    logger.warning(f"create_item falló para {item.product_code}: {create_exc} — buscando por referencia")
+                                    try:
+                                        existing = await client.find_item_by_reference(item.product_code)
+                                        if existing:
+                                            alegra_item_id = str(existing["id"])
+                                            logger.info(f"Ítem encontrado por referencia: {alegra_item_id} para {item.product_code}")
+                                    except Exception as find_exc:
+                                        logger.warning(f"No se encontró ítem en Alegra para {item.product_code}: {find_exc}")
+
+                            if not alegra_item_id:
+                                logger.warning(f"Skipping ítem sin alegra_item_id: {item.product_code}")
+                                continue
+
+                            # Persistir el id para futuros bills
+                            if item.product_code and alegra_item_id:
+                                await session.execute(
+                                    update(Product)
+                                    .where(Product.product_code == item.product_code)
+                                    .where(Product.tenant_id == tenant_id)
+                                    .values(alegra_item_id=alegra_item_id)
+                                )
+
+                            # Cuando el ítem tiene id del catálogo, Alegra
+                            # no acepta name ni tax — vienen del ítem registrado
+                            bill_items.append({
+                                "id": str(alegra_item_id),
                                 "quantity": float(item.quantity),
                                 "price": float(item.unit_price),
-                            }
-                            product_result = await session.execute(
-                                select(Product)
-                                .where(Product.product_code == item.product_code)
-                                .where(Product.tenant_id == tenant_id)
-                            )
-                            product_row = product_result.scalar_one_or_none()
-                            if product_row and product_row.alegra_item_id:
-                                item_payload["id"] = int(product_row.alegra_item_id)
-                            bill_items.append(item_payload)
+                            })
 
+                        due_date = (date.today() + timedelta(days=30)).isoformat()
                         bill_payload: Dict[str, Any] = {
                             "date": bill_date,
-                            "contact": contact_payload,
-                            "items": bill_items,
+                            "dueDate": due_date,
+                            "provider": provider_payload,
+                            "purchases": {
+                                "items": bill_items,
+                            },
                         }
 
+                        logger.info(f"ALEGRA POST /bills payload: {json.dumps(bill_payload, default=str, indent=2)}")
                         alegra_bill = await client.post_bill(bill_payload)
                         logger.info(f"Alegra bill created: {alegra_bill.get('id')} for invoice {invoice_id}")
 

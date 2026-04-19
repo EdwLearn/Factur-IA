@@ -32,6 +32,7 @@ ENV/
 .env
 .env.local
 .env.*.local
+.env.railway
 config/secrets/
 
 # IDE

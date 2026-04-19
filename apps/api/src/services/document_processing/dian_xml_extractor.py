@@ -21,6 +21,8 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional
 from xml.etree import ElementTree as ET
 
+from .amount_parser import parse_colombian_amount
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -53,10 +55,7 @@ def _t(element: Optional[ET.Element]) -> Optional[str]:
 def _decimal(value: Optional[str]) -> Optional[Decimal]:
     if not value:
         return None
-    try:
-        return Decimal(value.replace(",", ".").strip())
-    except InvalidOperation:
-        return None
+    return parse_colombian_amount(value)
 
 
 class DianXMLExtractor:

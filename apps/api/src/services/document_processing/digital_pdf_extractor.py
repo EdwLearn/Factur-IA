@@ -99,13 +99,15 @@ class DigitalPDFExtractor:
 
         try:
             with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+                all_page_tables: List[Dict] = []  # Todas las tablas antes de fusionar
+
                 for page in pdf.pages:
                     # Text lines
                     raw_text = page.extract_text() or ""
                     page_lines = [l.strip() for l in raw_text.split("\n") if l.strip()]
                     lines.extend(page_lines)
 
-                    # Tables
+                    # Tables — recopilar por página antes de fusionar
                     for raw_table in page.extract_tables() or []:
                         if not raw_table:
                             continue
@@ -115,11 +117,36 @@ class DigitalPDFExtractor:
                             for row in raw_table
                         ]
                         if clean_rows:
-                            tables.append({
+                            all_page_tables.append({
                                 "rows": clean_rows,
                                 "row_count": len(clean_rows),
                                 "col_count": max(len(r) for r in clean_rows),
                             })
+
+                # Fusionar tablas multipágina: si dos tablas consecutivas tienen el
+                # mismo col_count, se asume que la segunda es continuación de la primera.
+                # Se omiten filas de encabezado repetidas en páginas 2+.
+                for tbl in all_page_tables:
+                    if not tables:
+                        tables.append(tbl)
+                        continue
+                    prev = tables[-1]
+                    if prev["col_count"] == tbl["col_count"]:
+                        header_first_cell = prev["rows"][0][0] if prev["rows"] else None
+                        continuation_rows = [
+                            row for row in tbl["rows"]
+                            if not (row and row[0] == header_first_cell)
+                        ]
+                        if continuation_rows:
+                            prev["rows"].extend(continuation_rows)
+                            prev["row_count"] = len(prev["rows"])
+                            logger.info(
+                                f"Tabla multipágina: fusionadas {len(continuation_rows)} "
+                                f"filas adicionales (col_count={prev['col_count']})"
+                            )
+                    else:
+                        tables.append(tbl)
+
         except Exception as exc:
             logger.error(f"pdfplumber extraction failed: {exc}")
 

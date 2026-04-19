@@ -98,6 +98,7 @@ class InvoiceData(BaseModel):
     # Document info
     invoice_number: Optional[str] = None
     invoice_type: Optional[InvoiceType] = None
+    document_type: Optional[str] = "factura"   # "factura" | "remision" | "desconocido"
     issue_date: Optional[date] = None
     due_date: Optional[date] = None
     

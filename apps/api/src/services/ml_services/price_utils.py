@@ -173,6 +173,35 @@ def validate_price_business_rules(cost_price: Decimal, sale_price: Decimal) -> d
         'rounded_price': expected_rounded
     }
 
+def round_retail_price(price: Union[Decimal, float, int]) -> int:
+    """
+    Redondeo psicológico de precios para retail colombiano.
+
+    Reglas:
+    - precio < 4,000  → sin redondeo (dejar exacto como entero)
+    - precio >= 4,000 → redondear al múltiplo de 1,000 más cercano hacia arriba
+
+    Ejemplos:
+    3,500  → 3,500
+    4,800  → 5,000
+    4,100  → 5,000
+    17,800 → 18,000
+    17,200 → 18,000
+    25,000 → 25,000
+    99,500 → 100,000
+    """
+    if price is None:
+        return 0
+
+    price_float = float(price)
+
+    if price_float < 4000:
+        return int(round(price_float))
+
+    # Redondear al múltiplo de 1,000 hacia arriba
+    return int(math.ceil(price_float / 1000) * 1000)
+
+
 # Example usage and testing
 def test_price_rounding():
     """Test function to validate rounding logic"""

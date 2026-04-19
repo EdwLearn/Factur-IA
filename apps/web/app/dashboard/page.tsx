@@ -45,6 +45,18 @@ import { isAuthenticated, getStoredTenantId, logout } from "@/src/lib/api/endpoi
 import { PlanBadge } from "@/components/plan-badge"
 import { UpgradeModal } from "@/components/upgrade-modal"
 
+import {
+  TopSuppliersChart,
+  TopProductsChart,
+  PriceEvolutionChart,
+  PriceAlertsChart,
+} from "@/components/dashboard-charts"
+import {
+  type TopSuppliersResponse,
+  type TopProductsResponse,
+  type PriceAlertsResponse,
+} from "@/src/lib/api/endpoints/dashboard"
+
 import { InventoryPage } from "@/components/inventory-page"
 import { InvoiceManagementPage } from "@/components/invoice-management-page"
 import { SupplierManagementPage } from "@/components/supplier-management-page"
@@ -70,6 +82,7 @@ export default function FacturIADashboard() {
   const [selectedInvoice, setSelectedInvoice] = useState<any>(null)
   const [isInvoiceModalOpen, setIsInvoiceModalOpen] = useState(false)
   const [editedProducts, setEditedProducts] = useState<any[]>([])
+  const [deletedRows, setDeletedRows] = useState<Set<number>>(new Set())
   const [validationErrors, setValidationErrors] = useState<{ [key: string]: string }>({})
   const [markupPercentage, setMarkupPercentage] = useState(30)
   const [isConfirming, setIsConfirming] = useState(false)
@@ -99,6 +112,11 @@ export default function FacturIADashboard() {
   const [topSuppliersData, setTopSuppliersData] = useState<Array<{name: string; invoices: number; volume: number}>>([])
   const [stockAlertsData, setStockAlertsData] = useState<Array<{description: string; current_stock: number; min_stock: number; stock_status: string}>>([])
   const [recSummary, setRecSummary] = useState<{critical_restock: number; total_dead_stock: number; total_capital_tied: number} | null>(null)
+
+  // New chart states (null = loading, object = loaded)
+  const [topSuppliers, setTopSuppliers] = useState<TopSuppliersResponse | null>(null)
+  const [topProducts, setTopProducts] = useState<TopProductsResponse | null>(null)
+  const [priceAlerts, setPriceAlerts] = useState<PriceAlertsResponse | null>(null)
 
   const sidebarItems = [
     { name: "Dashboard", icon: BarChart3, active: activeTab === "Dashboard" },
@@ -138,15 +156,22 @@ export default function FacturIADashboard() {
       facturaAPI.setTenantId(tenantId)
 
       // Load all dashboard data in parallel
-      const [metrics, recentInvs, analytics] = await Promise.all([
-        facturaAPI.getDashboardMetrics(),
-        facturaAPI.getRecentInvoices(10),
-        facturaAPI.getDashboardAnalytics(),
-      ])
+      const [metrics, recentInvs, analytics, suppliersRes, productsRes, alertsRes] =
+        await Promise.all([
+          facturaAPI.getDashboardMetrics(),
+          facturaAPI.getRecentInvoices(10),
+          facturaAPI.getDashboardAnalytics(),
+          facturaAPI.getTopSuppliers().catch(() => null),
+          facturaAPI.getTopProducts().catch(() => null),
+          facturaAPI.getPriceAlerts().catch(() => null),
+        ])
 
       setDashboardMetrics(metrics)
       setRecentInvoicesData(recentInvs)
       setAnalyticsData(analytics)
+      setTopSuppliers(suppliersRes ?? { suppliers: [] })
+      setTopProducts(productsRes ?? { products: [] })
+      setPriceAlerts(alertsRes ?? { alerts: [] })
     } catch (error) {
       console.error("Error loading dashboard data:", error)
       // Keep mock data if API fails
@@ -236,7 +261,11 @@ export default function FacturIADashboard() {
             throw new Error(response.error?.message || 'Error al subir archivo')
           }
 
-          const invoice = response.data as InvoiceUploadResponse
+          const invoice = {
+            ...(response.data as InvoiceUploadResponse),
+            _filename: file.name,
+            _uploaded_at: new Date().toISOString(),
+          } as InvoiceUploadResponse
           newInvoices.push(invoice)
           console.log(`✅ Subido: ${invoice.id}`)
 
@@ -369,6 +398,7 @@ export default function FacturIADashboard() {
       style: "currency",
       currency: "COP",
       minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
     }).format(amount)
   }
 
@@ -400,10 +430,12 @@ export default function FacturIADashboard() {
         // 3) Configurar el estado para el modal usando "total" (el confiable)
         setSelectedInvoice({
           id: invoice.id,
+          _filename: (invoice as any)._filename ?? null,
+          _uploaded_at: (invoice as any)._uploaded_at ?? null,
           supplier: pricingData.supplier_name,
           status: status.status.toUpperCase(),
           statusColor: status.status === 'completed' ? '#10B981' : '#F59E0B',
-          total,                                    // <-- aquí ya no usamos pricingData.total_cost directo
+          total,
           items: pricingData.total_items,
           products: pricingData.line_items.map(item => ({
             code: item.product_code,
@@ -427,6 +459,7 @@ export default function FacturIADashboard() {
         })))
   
         setIsInvoiceModalOpen(true)
+        setDeletedRows(new Set())
         setValidationErrors({})
       } else {
         alert(`Estado ${status.status}: Esta factura aún no está lista para gestión de precios`)
@@ -532,10 +565,12 @@ export default function FacturIADashboard() {
       console.log("💾 Guardando cambios en la BD...")
     
       // Preparar datos para enviar a la API
-      const lineItemsToUpdate = editedProducts.map((product, index) => ({
-        line_item_id: product.line_item_id || product.id, // Usar ID real del producto
-        sale_price: product.finalPrice
-      }))
+      const lineItemsToUpdate = editedProducts
+        .filter((_, index) => !deletedRows.has(index))
+        .map((product) => ({
+          line_item_id: product.line_item_id || product.id,
+          sale_price: product.finalPrice
+        }))
 
       console.log("📝 Datos a guardar:", lineItemsToUpdate)
 
@@ -573,10 +608,12 @@ export default function FacturIADashboard() {
     setIsConfirming(true)
     try {
       // 1) Guardar precios — backend espera { line_items: [...] }
-      const lineItemsToUpdate = editedProducts.map((product) => ({
-        line_item_id: product.line_item_id || product.id,
-        sale_price: product.finalPrice,
-      }))
+      const lineItemsToUpdate = editedProducts
+        .filter((_, index) => !deletedRows.has(index))
+        .map((product) => ({
+          line_item_id: product.line_item_id || product.id,
+          sale_price: product.finalPrice,
+        }))
       const saveRes = await facturaAPI.setPricing(selectedInvoice.id, { line_items: lineItemsToUpdate })
       if (!saveRes.success) {
         throw new Error(saveRes.error?.message ?? 'Error al guardar precios')
@@ -1040,8 +1077,10 @@ export default function FacturIADashboard() {
                             >
                               <div className="flex items-center justify-between mb-2">
                                 <div>
-                                  <p className="font-semibold text-gray-900">{invoice.original_filename}</p>
-                                  <p className="text-sm text-gray-600">ID: {invoice.id?.substring(0, 12) ?? '—'}...</p>
+                                  <p className="font-semibold text-gray-900">
+                                    {(invoice as any)._filename ?? (invoice as any).original_filename ?? invoice.id}
+                                  </p>
+                                  <p className="text-xs text-gray-400">{invoice.id}</p>
                                 </div>
                                 <div className="flex items-center gap-2">
                                   {status ? (
@@ -1073,7 +1112,11 @@ export default function FacturIADashboard() {
                                 </div>
                               </div>
                               <div className="flex items-center justify-between text-sm text-gray-500">
-                                <span>{new Date(invoice.upload_timestamp).toLocaleString('es-CO')}</span>
+                                <span>
+                                  {(invoice as any)._uploaded_at
+                                    ? new Date((invoice as any)._uploaded_at).toLocaleString('es-CO')
+                                    : '—'}
+                                </span>
                                 {(status?.status === 'completed' || status?.status === 'PENDING') && (
                                   <span className="text-blue-600 font-medium">🎉 ¡Listo para precios!</span>
                                 )}
@@ -1331,6 +1374,19 @@ export default function FacturIADashboard() {
                   </Card>
                 </div>
               </div>
+
+              {/* ── New charts section ── */}
+              <div className="mt-8">
+                <h3 className="text-xl font-semibold text-gray-900 mb-6">
+                  Análisis de Compras y Precios
+                </h3>
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  <TopSuppliersChart data={topSuppliers} />
+                  <TopProductsChart data={topProducts} />
+                  <PriceEvolutionChart />
+                  <PriceAlertsChart data={priceAlerts} />
+                </div>
+              </div>
             </>
           )}
 
@@ -1353,8 +1409,18 @@ export default function FacturIADashboard() {
                 <div className="bg-gray-50 px-6 py-4 border-b border-gray-200">
                   <div className="flex items-center justify-between">
                     <div>
-                      <h2 className="text-xl font-bold text-gray-900">{selectedInvoice.id}</h2>
+                      <h2 className="text-xl font-bold text-gray-900">
+                        {selectedInvoice._filename ?? selectedInvoice.id}
+                      </h2>
                       <p className="text-sm text-gray-600">{selectedInvoice.supplier}</p>
+                      <div className="flex gap-3 mt-0.5">
+                        <p className="text-xs text-gray-400">ID: {selectedInvoice.id}</p>
+                        {selectedInvoice._uploaded_at && (
+                          <p className="text-xs text-gray-400">
+                            {new Date(selectedInvoice._uploaded_at).toLocaleString('es-CO')}
+                          </p>
+                        )}
+                      </div>
                     </div>
                     <button
                       onClick={handleCancelChanges}
@@ -1436,22 +1502,26 @@ export default function FacturIADashboard() {
                           <th className="border border-gray-200 px-3 py-2 text-right text-sm font-semibold text-gray-900">
                             Precio Final
                           </th>
+                          <th className="border border-gray-200 w-8" />
                         </tr>
                       </thead>
                       <tbody>
-                        {editedProducts.map((product, index) => (
-                          <tr key={index} className="hover:bg-gray-50">
+                        {editedProducts
+                          .map((product, index) => ({ product, originalIdx: index }))
+                          .filter(({ originalIdx }) => !deletedRows.has(originalIdx))
+                          .map(({ product, originalIdx }) => (
+                          <tr key={originalIdx} className="hover:bg-gray-50">
                             <td className="border border-gray-200 px-3 py-2">
                               <Input
                                 value={product.code}
-                                onChange={(e) => handleProductChange(index, "code", e.target.value)}
+                                onChange={(e) => handleProductChange(originalIdx, "code", e.target.value)}
                                 className="w-full text-sm"
                               />
                             </td>
                             <td className="border border-gray-200 px-3 py-2">
                               <Input
                                 value={product.description}
-                                onChange={(e) => handleProductChange(index, "description", e.target.value)}
+                                onChange={(e) => handleProductChange(originalIdx, "description", e.target.value)}
                                 className="w-full text-sm"
                               />
                             </td>
@@ -1460,7 +1530,7 @@ export default function FacturIADashboard() {
                                 type="number"
                                 value={product.quantity}
                                 onChange={(e) =>
-                                  handleProductChange(index, "quantity", Number.parseInt(e.target.value) || 0)
+                                  handleProductChange(originalIdx, "quantity", Number.parseInt(e.target.value) || 0)
                                 }
                                 className="w-full text-sm text-center"
                                 min="1"
@@ -1471,7 +1541,7 @@ export default function FacturIADashboard() {
                                 type="number"
                                 value={product.purchasePrice}
                                 onChange={(e) =>
-                                  handleProductChange(index, "purchasePrice", Number(e.target.value) || 0)
+                                  handleProductChange(originalIdx, "purchasePrice", Number(e.target.value) || 0)
                                 }
                                 className="w-full text-sm text-right"
                                 min="0"
@@ -1485,7 +1555,7 @@ export default function FacturIADashboard() {
                                 <Button
                                   size="sm"
                                   variant="outline"
-                                  onClick={() => applySuggestedPrice(index)}
+                                  onClick={() => applySuggestedPrice(originalIdx)}
                                   className="ml-2 text-xs px-2 py-1 h-6"
                                 >
                                   Aplicar
@@ -1498,22 +1568,62 @@ export default function FacturIADashboard() {
                                   type="number"
                                   value={product.finalPrice}
                                   onChange={(e) =>
-                                    handleProductChange(index, "finalPrice", Number.parseInt(e.target.value) || 0)
+                                    handleProductChange(originalIdx, "finalPrice", Number.parseInt(e.target.value) || 0)
                                   }
                                   className={`w-full text-sm text-right ${
-                                    validationErrors[`${index}-finalPrice`] ? "border-red-500" : ""
+                                    validationErrors[`${originalIdx}-finalPrice`] ? "border-red-500" : ""
                                   }`}
                                   min={product.purchasePrice}
                                 />
-                                {validationErrors[`${index}-finalPrice`] && (
-                                  <p className="text-xs text-red-500 mt-1">{validationErrors[`${index}-finalPrice`]}</p>
+                                {validationErrors[`${originalIdx}-finalPrice`] && (
+                                  <p className="text-xs text-red-500 mt-1">{validationErrors[`${originalIdx}-finalPrice`]}</p>
                                 )}
                               </div>
+                            </td>
+                            <td className="border border-gray-200 w-8 text-center">
+                              <button
+                                onClick={() => setDeletedRows(prev => new Set([...prev, originalIdx]))}
+                                className="text-gray-300 hover:text-red-500 transition-colors text-xs font-bold leading-none p-1"
+                                title="Eliminar fila"
+                              >
+                                ✕
+                              </button>
                             </td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
+                  </div>
+                  <div className="flex items-center justify-between mt-2 px-1">
+                    <button
+                      onClick={() =>
+                        setEditedProducts(prev => [
+                          ...prev,
+                          {
+                            code: "",
+                            description: "",
+                            quantity: 1,
+                            purchasePrice: 0,
+                            suggestedPrice: 0,
+                            finalPrice: 0,
+                          },
+                        ])
+                      }
+                      className="text-xs text-green-600 hover:text-green-800 underline"
+                    >
+                      + Agregar fila
+                    </button>
+                    {deletedRows.size > 0 && (
+                      <p className="text-xs text-gray-400">
+                        {deletedRows.size} fila{deletedRows.size !== 1 ? "s" : ""} eliminada{deletedRows.size !== 1 ? "s" : ""} — no se enviarán al confirmar
+                        <button
+                          onClick={() => setDeletedRows(new Set())}
+                          className="text-xs text-blue-400 hover:text-blue-600 ml-2 underline"
+                        >
+                          Restaurar todas
+                        </button>
+                      </p>
+                    )}
                   </div>
                 </div>
 

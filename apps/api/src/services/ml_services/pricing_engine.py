@@ -9,7 +9,8 @@ from datetime import datetime, timedelta
 import statistics
 from .category_classifier import get_category_classifier
 from .price_utils import (
-    round_price_colombian, 
+    round_price_colombian,
+    round_retail_price,
     format_colombian_price,
     calculate_rounded_margin,
     suggest_price_alternatives,
@@ -71,7 +72,7 @@ class PricingRecommendationEngine:
             # Category-based recommendation
             category_margin = category_info['margin_percentage']
             category_price_raw = cost_price * (1 + category_margin / 100) * quantity_factor
-            category_price = round_price_colombian(category_price_raw)
+            category_price = round_retail_price(category_price_raw)
             
             recommendations.append({
                 'price': category_price,
@@ -85,7 +86,7 @@ class PricingRecommendationEngine:
             
             # Historical-based recommendation (if available)
             if historical_price:
-                historical_price_rounded = round_price_colombian(historical_price * quantity_factor)
+                historical_price_rounded = round_retail_price(historical_price * quantity_factor)
                 historical_margin = calculate_rounded_margin(cost_price, historical_price_rounded)
                 recommendations.append({
                     'price': historical_price_rounded,
@@ -99,7 +100,7 @@ class PricingRecommendationEngine:
             # Supplier pattern recommendation (if available)
             if supplier_margin:
                 supplier_price_raw = cost_price * (1 + supplier_margin / 100) * quantity_factor
-                supplier_price = round_price_colombian(supplier_price_raw)
+                supplier_price = round_retail_price(supplier_price_raw)
                 recommendations.append({
                     'price': supplier_price,
                     'price_formatted': format_colombian_price(supplier_price),
@@ -112,7 +113,7 @@ class PricingRecommendationEngine:
             # Conservative recommendation (for risk-averse pricing)
             conservative_margin = max(category_margin * 0.8, self.min_markup)
             conservative_price_raw = cost_price * (1 + conservative_margin / 100) * quantity_factor
-            conservative_price = round_price_colombian(conservative_price_raw)
+            conservative_price = round_retail_price(conservative_price_raw)
             
             recommendations.append({
                 'price': conservative_price,
@@ -126,7 +127,7 @@ class PricingRecommendationEngine:
             # Aggressive recommendation (for high-margin strategy)
             aggressive_margin = min(category_margin * 1.3, self.max_markup)
             aggressive_price_raw = cost_price * (1 + aggressive_margin / 100) * quantity_factor
-            aggressive_price = round_price_colombian(aggressive_price_raw)
+            aggressive_price = round_retail_price(aggressive_price_raw)
             
             recommendations.append({
                 'price': aggressive_price,
@@ -304,7 +305,7 @@ class PricingRecommendationEngine:
         quantity_factor = self._get_quantity_factor(quantity)
         fallback_margin = 50.0  # 50% default margin
         fallback_price_raw = cost_price * (1 + fallback_margin / 100) * quantity_factor
-        fallback_price = round_price_colombian(fallback_price_raw)
+        fallback_price = round_retail_price(fallback_price_raw)
         
         return {
             'recommended_price': float(fallback_price),

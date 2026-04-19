@@ -112,6 +112,7 @@ export function ReportsAnalyticsPage() {
       style: "currency",
       currency: "COP",
       minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
     }).format(amount)
 
   const formatCurrencyShort = (amount: number) => {

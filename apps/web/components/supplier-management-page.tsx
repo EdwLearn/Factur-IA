@@ -149,6 +149,21 @@ export function SupplierManagementPage() {
     [suppliers],
   )
 
+  // ── Load supplier invoices (used both on tab change and on direct open) ──
+  const loadSupplierInvoices = useCallback(async (vatNumber: string) => {
+    setInvoicesLoading(true)
+    setInvoices([])
+    try {
+      const res = await (facturaAPI as any).getSupplierInvoices(vatNumber)
+      const data = (res as any)?.data ?? res
+      setInvoices(Array.isArray(data) ? data : [])
+    } catch {
+      setInvoices([])
+    } finally {
+      setInvoicesLoading(false)
+    }
+  }, [])
+
   // ── Open profile ──
   const openProfile = (supplier: Supplier, tab: string = "info") => {
     setSelectedSupplier(supplier)
@@ -165,24 +180,18 @@ export function SupplierManagementPage() {
     setEditSuccess(false)
     setInvoices([])
     setSheetOpen(true)
+    if (tab === "invoices") {
+      loadSupplierInvoices(supplier.vatNumber)
+    }
   }
 
   // ── Load invoices on tab change ──
   const handleTabChange = useCallback(async (tab: string) => {
     setActiveTab(tab)
     if (tab === "invoices" && selectedSupplier && invoices.length === 0) {
-      setInvoicesLoading(true)
-      try {
-        const res = await (facturaAPI as any).getSupplierInvoices(selectedSupplier.vatNumber)
-        const data = (res as any)?.data ?? res
-        setInvoices(Array.isArray(data) ? data : [])
-      } catch {
-        setInvoices([])
-      } finally {
-        setInvoicesLoading(false)
-      }
+      loadSupplierInvoices(selectedSupplier.vatNumber)
     }
-  }, [selectedSupplier, invoices.length])
+  }, [selectedSupplier, invoices.length, loadSupplierInvoices])
 
   // ── Save edit ──
   const handleEditSave = async () => {
@@ -217,7 +226,7 @@ export function SupplierManagementPage() {
 
   // ── Formatters ──
   const formatCurrency = (amount: number) =>
-    new Intl.NumberFormat("es-CO", { style: "currency", currency: "COP", minimumFractionDigits: 0 }).format(amount)
+    new Intl.NumberFormat("es-CO", { style: "currency", currency: "COP", minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(amount)
 
   const formatDate = (dateString?: string | null) => {
     if (!dateString) return "—"

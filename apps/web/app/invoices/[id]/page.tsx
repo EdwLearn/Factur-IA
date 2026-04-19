@@ -8,7 +8,8 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 import { Skeleton } from "@/components/ui/skeleton"
-import { ArrowLeft, CheckCircle, AlertCircle, Send } from "lucide-react"
+import { ArrowLeft, CheckCircle, AlertCircle, Send, AlertTriangle } from "lucide-react"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 
 // ── Local types matching the actual backend snake_case responses ──────────────
 
@@ -34,6 +35,7 @@ interface InvoiceTotalsShape {
 interface InvoiceDataShape {
   invoice_number?: string | null
   issue_date?: string | null
+  document_type?: string | null
   supplier?: {
     company_name?: string | null
     nit?: string | null
@@ -64,6 +66,7 @@ function formatCOP(amount: number): string {
     style: "currency",
     currency: "COP",
     minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
   }).format(amount)
 }
 
@@ -114,6 +117,8 @@ export default function InvoiceDetailPage() {
 
   // Editable line items state (local overrides for Textract-extracted prices)
   const [editedItems, setEditedItems] = useState<InvoiceLineItemShape[]>([])
+  // Filas eliminadas manualmente (por índice en editedItems)
+  const [deletedRows, setDeletedRows] = useState<Set<number>>(new Set())
 
   const pollingRef = useRef<NodeJS.Timeout | null>(null)
   const pollingStartRef = useRef<number>(0)
@@ -228,13 +233,34 @@ export default function InvoiceDetailPage() {
     )
   }
 
+  const [registeringInventory, setRegisteringInventory] = useState(false)
+  const [inventoryMessage, setInventoryMessage] = useState<string | null>(null)
+
+  const handleRegisterInventory = async () => {
+    setRegisteringInventory(true)
+    setInventoryMessage(null)
+    try {
+      const res = await facturaAPI.confirmPricing(id, { register_as: "inventory_entry" })
+      if (!res.success) {
+        throw new Error(res.error?.message ?? "Error al registrar entrada de inventario")
+      }
+      setInventoryMessage("Entrada de inventario registrada")
+      setPricingData((prev) => prev ? { ...prev, pricing_status: "confirmed" } : prev)
+    } catch (err) {
+      setInventoryMessage(err instanceof Error ? err.message : "Error desconocido")
+    } finally {
+      setRegisteringInventory(false)
+    }
+  }
+
   const handleConfirm = async () => {
     setConfirming(true)
     setConfirmError(null)
     try {
-      const payload = editedItems.length > 0
+      const itemsToConfirm = editedItems.filter((_, idx) => !deletedRows.has(idx))
+      const payload = itemsToConfirm.length > 0
         ? {
-            line_items: editedItems.map(item => ({
+            line_items: itemsToConfirm.map(item => ({
               description: item.description,
               quantity: Number(item.quantity),
               unit_price: Number(item.unit_price),
@@ -389,6 +415,40 @@ export default function InvoiceDetailPage() {
         Volver a Facturas
       </Button>
 
+      {/* Banner de remisión */}
+      {invoiceData.document_type === "remision" && (
+        <Alert className="mb-4 border-yellow-500 bg-yellow-50">
+          <AlertTriangle className="h-4 w-4 text-yellow-600" />
+          <AlertTitle className="text-yellow-800">
+            Este documento es una remisión, no una factura
+          </AlertTitle>
+          <AlertDescription className="text-yellow-700">
+            Una remisión confirma la entrega de mercancía pero no genera
+            obligación tributaria. ¿Qué deseas hacer?
+            <div className="flex gap-2 mt-3 flex-wrap">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleRegisterInventory}
+                disabled={registeringInventory || pricingData?.pricing_status === "confirmed"}
+              >
+                {registeringInventory ? "Registrando..." : "Registrar entrada al inventario"}
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => router.push("/invoices")}
+              >
+                Ignorar este documento
+              </Button>
+            </div>
+            {inventoryMessage && (
+              <p className="mt-2 text-sm font-medium text-green-700">{inventoryMessage}</p>
+            )}
+          </AlertDescription>
+        </Alert>
+      )}
+
       {/* Header */}
       <Card>
         <CardContent className="p-6">
@@ -480,14 +540,16 @@ export default function InvoiceDetailPage() {
                     <th className="px-6 py-3 text-right font-medium text-gray-600">
                       Subtotal
                     </th>
+                    <th className="w-8" />
                   </tr>
                 </thead>
                 <tbody>
-                  {invoiceData.line_items.map((item, idx) => {
-                    const edited = editedItems[idx] ?? item
-                    return (
+                  {editedItems
+                    .map((item, idx) => ({ item, originalIdx: idx }))
+                    .filter(({ originalIdx }) => !deletedRows.has(originalIdx))
+                    .map(({ item, originalIdx }) => (
                       <tr
-                        key={idx}
+                        key={originalIdx}
                         className="border-b last:border-0 hover:bg-gray-50 transition-colors"
                       >
                         <td className="px-6 py-3 text-gray-900">
@@ -499,29 +561,49 @@ export default function InvoiceDetailPage() {
                           )}
                         </td>
                         <td className="px-4 py-3 text-right text-gray-700">
-                          {Number(item.quantity)}
+                          {item.quantity != null ? Number(item.quantity) : "—"}
                         </td>
                         <td className="px-4 py-3 text-right">
                           <input
-                            key={`price-${idx}-${item.unit_price}`}
+                            key={`price-${originalIdx}-${item.unit_price}`}
                             type="text"
                             inputMode="numeric"
-                            defaultValue={String(Number(item.unit_price))}
-                            onBlur={(e) => handlePriceChange(idx, e.target.value)}
-                            className="w-32 text-right bg-transparent border-b border-transparent hover:border-gray-300 focus:border-blue-400 focus:outline-none text-gray-700 py-0.5 transition-colors"
+                            defaultValue={item.unit_price != null ? String(Number(item.unit_price)) : ""}
+                            placeholder="—"
+                            onBlur={(e) => handlePriceChange(originalIdx, e.target.value)}
+                            className="w-32 text-right bg-transparent border-b border-transparent hover:border-gray-300 focus:border-blue-400 focus:outline-none text-gray-700 py-0.5 transition-colors placeholder-gray-400"
                           />
                         </td>
                         <td className="px-4 py-3 text-right text-gray-500">
                           {item.iva_rate != null ? `${Number(item.iva_rate)}%` : "—"}
                         </td>
                         <td className="px-6 py-3 text-right font-medium text-gray-900">
-                          {formatCOP(Number(edited.subtotal))}
+                          {item.subtotal != null ? formatCOP(Number(item.subtotal)) : "—"}
+                        </td>
+                        <td className="w-8 pr-2">
+                          <button
+                            onClick={() => setDeletedRows(prev => new Set([...prev, originalIdx]))}
+                            className="text-gray-300 hover:text-red-500 transition-colors text-xs font-bold leading-none p-1"
+                            title="Eliminar esta fila"
+                          >
+                            ✕
+                          </button>
                         </td>
                       </tr>
-                    )
-                  })}
+                    ))}
                 </tbody>
               </table>
+              {deletedRows.size > 0 && (
+                <p className="text-xs text-gray-400 px-6 py-2">
+                  {deletedRows.size} fila{deletedRows.size !== 1 ? "s" : ""} eliminada{deletedRows.size !== 1 ? "s" : ""} — no se enviarán a Alegra al confirmar
+                  <button
+                    onClick={() => setDeletedRows(new Set())}
+                    className="text-xs text-blue-400 hover:text-blue-600 ml-2 underline"
+                  >
+                    Restaurar todas
+                  </button>
+                </p>
+              )}
             </div>
           )}
         </CardContent>

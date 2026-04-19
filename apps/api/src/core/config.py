@@ -50,6 +50,13 @@ class Settings(BaseSettings):
     )
 
     # Database - PostgreSQL
+    # Railway PostgreSQL plugin sets DATABASE_URL as a full connection string.
+    # If set, it overrides the individual db_* fields below.
+    database_url_override: Optional[str] = Field(
+        default=None,
+        description="Full PostgreSQL URL (e.g. from Railway). Overrides db_* fields."
+    )
+
     db_host: str = Field(default="localhost", description="Database host")
     db_port: int = Field(default=5432, description="Database port")
     db_name: str = Field(default="facturia_dev", description="Database name")
@@ -97,8 +104,8 @@ class Settings(BaseSettings):
 
     # Alegra integration
     alegra_base_url: str = Field(
-        default="https://sandbox.alegra.com/api/v1",
-        description="Alegra API base URL (sandbox or production)"
+        default="https://sandbox.alegra.com:26967/api/v1",
+        description="Alegra API base URL. Sandbox: https://sandbox.alegra.com:26967/api/v1  Production: https://api.alegra.com/api/v1"
     )
     alegra_encryption_key: str = Field(
         default="",
@@ -123,13 +130,16 @@ class Settings(BaseSettings):
 
     @property
     def database_url(self) -> str:
-        """Synchronous database URL."""
+        """Synchronous database URL. Uses DATABASE_URL_OVERRIDE if set (Railway)."""
+        if self.database_url_override:
+            # Railway sometimes uses the legacy 'postgres://' scheme
+            return self.database_url_override.replace("postgres://", "postgresql://", 1)
         return f"postgresql://{self.db_user}:{self.db_password}@{self.db_host}:{self.db_port}/{self.db_name}"
 
     @property
     def async_database_url(self) -> str:
         """Asynchronous database URL."""
-        return f"postgresql+asyncpg://{self.db_user}:{self.db_password}@{self.db_host}:{self.db_port}/{self.db_name}"
+        return self.database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
 
     @property
     def redis_url(self) -> str:

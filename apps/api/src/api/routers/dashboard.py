@@ -7,11 +7,11 @@ Proporciona métricas agregadas y análisis para el dashboard principal:
 - Análisis de tendencias
 - Comparaciones período sobre período
 """
-from fastapi import APIRouter, Depends, HTTPException
-from typing import Dict, Any, List
+from fastapi import APIRouter, Depends, HTTPException, Query
+from typing import Dict, Any, List, Optional
 from decimal import Decimal
 from datetime import datetime, timedelta
-from sqlalchemy import select, func, and_, desc, text
+from sqlalchemy import select, func, and_, or_, desc, text
 from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 
@@ -578,3 +578,270 @@ async def get_reports_data(
     except Exception as e:
         logger.error(f"Error fetching reports data: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch reports: {str(e)}")
+
+
+# ─── New dashboard chart models ───────────────────────────────────────────────
+
+class TopSupplierItem(BaseModel):
+    name: str
+    nit: str | None
+    total_gasto: float
+    num_facturas: int
+
+class TopSuppliersResponse(BaseModel):
+    suppliers: List[TopSupplierItem]
+
+class TopProductItem(BaseModel):
+    description: str
+    product_code: str | None
+    cantidad_total: float
+    gasto_total: float
+    num_facturas: int
+
+class TopProductsResponse(BaseModel):
+    products: List[TopProductItem]
+
+class PriceEvolutionPoint(BaseModel):
+    semana: str
+    precio_promedio: float
+    precio_min: float
+    precio_max: float
+    supplier: str | None
+
+class PriceEvolutionResponse(BaseModel):
+    product: str
+    evolution: List[PriceEvolutionPoint]
+
+class PriceAlertItem(BaseModel):
+    description: str
+    product_code: str | None
+    precio_actual: float
+    precio_anterior: float
+    variacion_pct: float
+    supplier: str | None
+    subio: bool
+
+class PriceAlertsResponse(BaseModel):
+    alerts: List[PriceAlertItem]
+
+
+# ─── Endpoint 1: Top suppliers by spend this month ────────────────────────────
+
+@router.get("/top-suppliers", response_model=TopSuppliersResponse)
+async def get_top_suppliers(tenant_id: str = Depends(get_tenant_id)):
+    """Top 5 suppliers by total spend in the current month (confirmed invoices)."""
+    try:
+        async with AsyncSessionFactory() as session:
+            query = (
+                select(
+                    Invoice.supplier_name,
+                    Invoice.supplier_nit,
+                    func.sum(Invoice.total_amount).label("total_gasto"),
+                    func.count(Invoice.id).label("num_facturas"),
+                )
+                .where(
+                    and_(
+                        Invoice.tenant_id == tenant_id,
+                        Invoice.status == "confirmed",
+                        func.date_trunc(text("'month'"), Invoice.upload_timestamp)
+                        == func.date_trunc(text("'month'"), func.now()),
+                    )
+                )
+                .group_by(Invoice.supplier_name, Invoice.supplier_nit)
+                .order_by(desc(func.sum(Invoice.total_amount)))
+                .limit(5)
+            )
+            result = await session.execute(query)
+            rows = result.all()
+            suppliers = [
+                TopSupplierItem(
+                    name=row.supplier_name or "Desconocido",
+                    nit=row.supplier_nit,
+                    total_gasto=float(row.total_gasto or 0),
+                    num_facturas=int(row.num_facturas or 0),
+                )
+                for row in rows
+            ]
+            return TopSuppliersResponse(suppliers=suppliers)
+    except Exception as e:
+        logger.error(f"Error fetching top suppliers: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch top suppliers: {str(e)}")
+
+
+# ─── Endpoint 2: Most purchased products this month ───────────────────────────
+
+@router.get("/top-products", response_model=TopProductsResponse)
+async def get_top_products(tenant_id: str = Depends(get_tenant_id)):
+    """Top 8 products by total quantity purchased in the current month (confirmed invoices)."""
+    try:
+        async with AsyncSessionFactory() as session:
+            query = (
+                select(
+                    InvoiceLineItem.description,
+                    InvoiceLineItem.product_code,
+                    func.sum(InvoiceLineItem.quantity).label("cantidad_total"),
+                    func.sum(InvoiceLineItem.subtotal).label("gasto_total"),
+                    func.count(func.distinct(InvoiceLineItem.invoice_id)).label("num_facturas"),
+                )
+                .join(Invoice, InvoiceLineItem.invoice_id == Invoice.id)
+                .where(
+                    and_(
+                        Invoice.tenant_id == tenant_id,
+                        Invoice.status == "confirmed",
+                        func.date_trunc(text("'month'"), Invoice.upload_timestamp)
+                        == func.date_trunc(text("'month'"), func.now()),
+                    )
+                )
+                .group_by(InvoiceLineItem.description, InvoiceLineItem.product_code)
+                .order_by(desc(func.sum(InvoiceLineItem.quantity)))
+                .limit(8)
+            )
+            result = await session.execute(query)
+            rows = result.all()
+            products = [
+                TopProductItem(
+                    description=row.description or "",
+                    product_code=row.product_code,
+                    cantidad_total=float(row.cantidad_total or 0),
+                    gasto_total=float(row.gasto_total or 0),
+                    num_facturas=int(row.num_facturas or 0),
+                )
+                for row in rows
+            ]
+            return TopProductsResponse(products=products)
+    except Exception as e:
+        logger.error(f"Error fetching top products: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch top products: {str(e)}")
+
+
+# ─── Endpoint 3: Price evolution of a product (last 6 months) ─────────────────
+
+@router.get("/price-evolution", response_model=PriceEvolutionResponse)
+async def get_price_evolution(
+    product_code: Optional[str] = Query(None),
+    description: Optional[str] = Query(None),
+    tenant_id: str = Depends(get_tenant_id),
+):
+    """Weekly price evolution for a product over the last 6 months."""
+    search = product_code or description or ""
+    if not search:
+        return PriceEvolutionResponse(product="", evolution=[])
+
+    try:
+        async with AsyncSessionFactory() as session:
+            search_pattern = f"%{search}%"
+            six_months_ago = datetime.utcnow() - timedelta(days=180)
+
+            query = (
+                select(
+                    func.date_trunc(text("'week'"), Invoice.upload_timestamp).label("semana"),
+                    func.avg(InvoiceLineItem.unit_price).label("precio_promedio"),
+                    func.min(InvoiceLineItem.unit_price).label("precio_min"),
+                    func.max(InvoiceLineItem.unit_price).label("precio_max"),
+                    Invoice.supplier_name,
+                )
+                .join(Invoice, InvoiceLineItem.invoice_id == Invoice.id)
+                .where(
+                    and_(
+                        Invoice.tenant_id == tenant_id,
+                        or_(
+                            InvoiceLineItem.product_code.ilike(search_pattern),
+                            InvoiceLineItem.description.ilike(search_pattern),
+                        ),
+                        Invoice.upload_timestamp >= six_months_ago,
+                    )
+                )
+                .group_by(
+                    text("date_trunc('week', upload_timestamp)"),
+                    Invoice.supplier_name,
+                )
+                .order_by(text("date_trunc('week', upload_timestamp) ASC"))
+            )
+            result = await session.execute(query)
+            rows = result.all()
+            evolution = [
+                PriceEvolutionPoint(
+                    semana=row.semana.strftime("%Y-%m-%d") if row.semana else "",
+                    precio_promedio=round(float(row.precio_promedio or 0), 2),
+                    precio_min=round(float(row.precio_min or 0), 2),
+                    precio_max=round(float(row.precio_max or 0), 2),
+                    supplier=row.supplier_name,
+                )
+                for row in rows
+            ]
+            return PriceEvolutionResponse(product=search, evolution=evolution)
+    except Exception as e:
+        logger.error(f"Error fetching price evolution: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch price evolution: {str(e)}")
+
+
+# ─── Endpoint 4: Price alerts (>10% variation vs previous purchase) ───────────
+
+@router.get("/price-alerts", response_model=PriceAlertsResponse)
+async def get_price_alerts(tenant_id: str = Depends(get_tenant_id)):
+    """Products whose unit price changed more than 10% vs the previous purchase."""
+    try:
+        async with AsyncSessionFactory() as session:
+            sql = text("""
+                WITH ranked AS (
+                    SELECT
+                        ili.description,
+                        ili.product_code,
+                        ili.unit_price,
+                        pi.upload_timestamp,
+                        pi.supplier_name,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY ili.description
+                            ORDER BY pi.upload_timestamp DESC
+                        ) AS rn
+                    FROM invoice_line_items ili
+                    JOIN processed_invoices pi ON ili.invoice_id = pi.id
+                    WHERE pi.tenant_id = :tenant_id
+                      AND pi.status = 'confirmed'
+                ),
+                precio_actual AS (
+                    SELECT description, product_code, unit_price AS precio_actual,
+                           supplier_name
+                    FROM ranked WHERE rn = 1
+                ),
+                precio_anterior AS (
+                    SELECT description, unit_price AS precio_anterior
+                    FROM ranked WHERE rn = 2
+                )
+                SELECT
+                    pa.description,
+                    pa.product_code,
+                    pa.precio_actual,
+                    pant.precio_anterior,
+                    pa.supplier_name,
+                    ROUND(
+                        ((pa.precio_actual - pant.precio_anterior)
+                         / NULLIF(pant.precio_anterior, 0) * 100)::numeric, 1
+                    ) AS variacion_pct
+                FROM precio_actual pa
+                JOIN precio_anterior pant ON pa.description = pant.description
+                WHERE ABS(
+                    (pa.precio_actual - pant.precio_anterior)
+                    / NULLIF(pant.precio_anterior, 0) * 100
+                ) >= 10
+                ORDER BY ABS(variacion_pct) DESC
+                LIMIT 10
+            """)
+            result = await session.execute(sql, {"tenant_id": tenant_id})
+            rows = result.all()
+            alerts = [
+                PriceAlertItem(
+                    description=row.description or "",
+                    product_code=row.product_code,
+                    precio_actual=float(row.precio_actual or 0),
+                    precio_anterior=float(row.precio_anterior or 0),
+                    variacion_pct=float(row.variacion_pct or 0),
+                    supplier=row.supplier_name,
+                    subio=float(row.variacion_pct or 0) > 0,
+                )
+                for row in rows
+            ]
+            return PriceAlertsResponse(alerts=alerts)
+    except Exception as e:
+        logger.error(f"Error fetching price alerts: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch price alerts: {str(e)}")

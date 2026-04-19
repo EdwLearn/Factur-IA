@@ -16,12 +16,15 @@ class TextractDataEnhancer:
     """
     
     def __init__(self):
-        # Unit conversion mapping
+        # Unit conversion mapping.
+        # Only units that appear as standalone values in a dedicated U/M column.
+        # PAR/PARES removed: Textract falsely reads column cells containing "SET*2"
+        # as unit_measure='PAR', causing qty×2 and price÷2 on products sold in pairs.
+        # DOC/DOCENA kept because "DOC" is unlikely to appear inside product descriptions;
+        # DEC was never in the map (no Colombian invoice format uses it).
         self.unit_conversions = {
             'DOC': 12,      # Docena
             'DOCENA': 12,   # Docena (español)
-            'PAR': 2,       # Par
-            'PARES': 2,     # Pares
             'GRS': 144,     # Gruesa (12 docenas)
             'GRUESA': 144,  # Gruesa
             'PCS': 1,       # Piezas
@@ -33,6 +36,11 @@ class TextractDataEnhancer:
             'L': 1,         # Litro
             'ML': 1,        # Mililitro
         }
+
+        # Units that are valid only as exact, standalone U/M column values.
+        # Any unit_measure containing digits or special characters (e.g. "SET*2")
+        # is treated as a description fragment, not a real unit — skip conversion.
+        self._valid_unit_pattern = re.compile(r'^[A-Z]{1,8}$')
     
     def enhance_extracted_data(self, raw_data: Dict) -> Dict:
         """
@@ -137,6 +145,15 @@ class TextractDataEnhancer:
     
         if not quantity or not unit:
             logger.warning(f"⚠️ Missing data: qty={quantity}, unit={unit}")
+            return item
+
+        # Guard: reject unit strings that contain digits or special chars —
+        # these are description fragments accidentally mapped as unit_measure.
+        if not self._valid_unit_pattern.match(unit):
+            logger.warning(
+                f"⛔ unit_measure='{unit}' contains non-alpha chars — "
+                f"looks like a description fragment, skipping conversion"
+            )
             return item
     
         # Store original values

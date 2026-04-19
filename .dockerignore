@@ -1,0 +1,41 @@
+# Version control
+.git/
+.gitignore
+
+# Environment files (never in images)
+.env
+.env.local
+.env.production
+.env.railway
+.env.*.local
+
+# Node
+node_modules/
+apps/web/.next/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+venv/
+.venv/
+*.egg-info/
+
+# Logs / temp
+*.log
+logs/
+tmp/
+temp/
+
+# CI / tooling
+.turbo/
+.github/
+.devcontainer/
+coverage/
+
+# Infrastructure files not needed in image
+infrastructure/

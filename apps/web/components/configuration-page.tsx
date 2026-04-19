@@ -1,15 +1,13 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { apiClient } from "@/src/lib/api/client"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Switch } from "@/components/ui/switch"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Textarea } from "@/components/ui/textarea"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Progress } from "@/components/ui/progress"
 import { Separator } from "@/components/ui/separator"
@@ -17,92 +15,118 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import {
   Building2,
-  Receipt,
   Plug,
   Users,
   Bell,
-  Database,
-  Upload,
-  Phone,
-  Crown,
   CheckCircle,
   XCircle,
-  Clock,
   Plus,
-  Edit,
   Trash2,
-  Download,
-  Settings,
-  Shield,
-  Eye,
   Save,
-  AlertTriangle,
-  Info,
   RefreshCw,
   Loader2,
+  Upload,
+  Crown,
+  AlertTriangle,
+  Zap,
+  Clock,
 } from "lucide-react"
+
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 interface User {
   id: string
   name: string
   email: string
-  role: "Administrator" | "User" | "Read-only"
+  role: "Admin" | "Usuario"
   status: "active" | "inactive"
-  lastActivity: string
-  permissions: {
-    invoices: boolean
-    inventory: boolean
-    reports: boolean
-    configuration: boolean
-  }
 }
 
-const sampleUsers: User[] = [
-  {
-    id: "1",
-    name: "Juan Pérez",
-    email: "juan.perez@almacenmedellinja.com",
-    role: "Administrator",
-    status: "active",
-    lastActivity: "2024-01-15 14:30",
-    permissions: { invoices: true, inventory: true, reports: true, configuration: true },
-  },
-  {
-    id: "2",
-    name: "María González",
-    email: "maria.gonzalez@almacenmedellinja.com",
-    role: "User",
-    status: "active",
-    lastActivity: "2024-01-15 12:15",
-    permissions: { invoices: true, inventory: true, reports: true, configuration: false },
-  },
-  {
-    id: "3",
-    name: "Carlos Rodríguez",
-    email: "carlos.rodriguez@almacenmedellinja.com",
-    role: "Read-only",
-    status: "inactive",
-    lastActivity: "2024-01-10 09:45",
-    permissions: { invoices: false, inventory: false, reports: true, configuration: false },
-  },
-]
+interface CompanyForm {
+  name: string
+  nit: string
+  phone: string
+  email: string
+  address: string
+}
+
+interface AlegraInfo {
+  businessName: string
+  connectedAt: string
+  syncedItems: number
+  lastSync: string
+}
+
+interface SyncResult {
+  pushed: number
+  updated: number
+  pulled: number
+  contacts: number
+  errors: string[]
+}
+
+// ─── Tabs ─────────────────────────────────────────────────────────────────────
+
+const tabs = [
+  { id: "empresa",        label: "Mi Empresa",    icon: Building2 },
+  { id: "integraciones",  label: "Integraciones", icon: Plug },
+  { id: "usuarios",       label: "Usuarios",      icon: Users },
+  { id: "notificaciones", label: "Notificaciones",icon: Bell },
+] as const
+
+type TabId = typeof tabs[number]["id"]
+
+// ─── Component ────────────────────────────────────────────────────────────────
 
 export function ConfigurationPage() {
-  const [activeTab, setActiveTab] = useState("company")
-  const [isInviteModalOpen, setIsInviteModalOpen] = useState(false)
-  const [autoSave, setAutoSave] = useState(true)
+  const [activeTab, setActiveTab]   = useState<TabId>("empresa")
+  const [isDirty,   setIsDirty]     = useState(false)
 
-  // Alegra integration state
-  const [alegraConnected, setAlegraConnected] = useState(false)
+  // ── Company form ──
+  const [company, setCompany] = useState<CompanyForm>({
+    name:    "Almacén Medellín JA",
+    nit:     "900123456-1",
+    phone:   "+57 4 123-4567",
+    email:   "contacto@almacenmedellinja.com",
+    address: "Carrera 70 #45-23, El Poblado, Medellín",
+  })
+  const [logoPreview, setLogoPreview] = useState<string | null>(null)
+  const logoInputRef = useRef<HTMLInputElement>(null)
+
+  // ── Plan (static for now) ──
+  const plan = { name: "Premium", type: "pro" as "freemium" | "basic" | "pro", used: 85, limit: 200, daysToReset: 14 }
+
+  // ── Alegra ──
+  const [alegraConnected,   setAlegraConnected]   = useState(false)
   const [alegraConnectOpen, setAlegraConnectOpen] = useState(false)
-  const [alegraConfigOpen, setAlegraConfigOpen] = useState(false)
-  const [alegraEmail, setAlegraEmail] = useState("")
-  const [alegraToken, setAlegraToken] = useState("")
-  const [alegraConnecting, setAlegraConnecting] = useState(false)
-  const [alegraSyncing, setAlegraSyncing] = useState(false)
-  const [alegraError, setAlegraError] = useState<string | null>(null)
-  const [alegraSyncResult, setAlegraSyncResult] = useState<{ pushed: number; updated: number; pulled: number; contacts: number; errors: string[] } | null>(null)
-  const [alegraInfo, setAlegraInfo] = useState({ businessName: "", connectedAt: "", syncedItems: 0, lastSync: "" })
+  const [alegraConfigOpen,  setAlegraConfigOpen]  = useState(false)
+  const [alegraEmail,       setAlegraEmail]       = useState("")
+  const [alegraToken,       setAlegraToken]       = useState("")
+  const [alegraConnecting,  setAlegraConnecting]  = useState(false)
+  const [alegraSyncing,     setAlegraSyncing]     = useState(false)
+  const [alegraError,       setAlegraError]       = useState<string | null>(null)
+  const [alegraSyncResult,  setAlegraSyncResult]  = useState<SyncResult | null>(null)
+  const [alegraInfo,        setAlegraInfo]        = useState<AlegraInfo>({
+    businessName: "", connectedAt: "", syncedItems: 0, lastSync: "",
+  })
+
+  // ── Users ──
+  const [users,        setUsers]        = useState<User[]>([])
+  const [usersLoading, setUsersLoading] = useState(false)
+  const [inviteOpen,   setInviteOpen]   = useState(false)
+  const [inviteEmail,  setInviteEmail]  = useState("")
+  const [inviteRole,   setInviteRole]   = useState<"Admin" | "Usuario">("Usuario")
+
+  // ── Notifications ──
+  const [notifs, setNotifs] = useState({
+    newInvoices:  true,
+    procErrors:   true,
+    lowStock:     true,
+    weeklyReport: false,
+    monthlyReport:true,
+  })
+
+  // ─── Load Alegra status ────────────────────────────────────────────────────
 
   const loadAlegraStatus = useCallback(async () => {
     try {
@@ -111,985 +135,830 @@ export function ConfigurationPage() {
         setAlegraConnected(true)
         setAlegraInfo({
           businessName: res.data.email ?? "Cuenta Alegra",
-          connectedAt: res.data.connected_at
+          connectedAt:  res.data.connected_at
             ? new Date(res.data.connected_at).toLocaleDateString("es-CO")
             : "",
           syncedItems: res.data.synced_items ?? 0,
-          lastSync: res.data.last_sync
+          lastSync:    res.data.last_sync
             ? new Date(res.data.last_sync).toLocaleString("es-CO")
             : "",
         })
       }
-    } catch {
-      // Silencioso — si no hay Alegra conectado, simplemente muestra "desconectado"
-    }
+    } catch { /* silencioso */ }
+  }, [])
+
+  // ─── Load users ───────────────────────────────────────────────────────────
+
+  const loadUsers = useCallback(async () => {
+    setUsersLoading(true)
+    try {
+      const res = await apiClient.get("/users")
+      if (res.success && Array.isArray(res.data)) {
+        setUsers(res.data)
+      }
+    } catch { /* endpoint puede no existir aún */ }
+    finally { setUsersLoading(false) }
   }, [])
 
   useEffect(() => {
     loadAlegraStatus()
-  }, [loadAlegraStatus])
+    loadUsers()
+  }, [loadAlegraStatus, loadUsers])
 
-  const tabs = [
-    { id: "company", label: "Perfil de Empresa", icon: Building2 },
-    { id: "tax", label: "Configuración Fiscal", icon: Receipt },
-    { id: "integrations", label: "Integraciones", icon: Plug },
-    { id: "users", label: "Usuarios y Permisos", icon: Users },
-    { id: "notifications", label: "Notificaciones", icon: Bell },
-    { id: "backup", label: "Respaldo y Exportación", icon: Database },
-  ]
+  // ─── Handlers ─────────────────────────────────────────────────────────────
 
-  const getStatusBadge = (status: string) => {
-    switch (status) {
-      case "connected":
-        return (
-          <Badge className="bg-green-100 text-green-800 hover:bg-green-100">
-            <CheckCircle className="w-3 h-3 mr-1" />
-            Conectado
-          </Badge>
-        )
-      case "disconnected":
-        return (
-          <Badge className="bg-red-100 text-red-800 hover:bg-red-100">
-            <XCircle className="w-3 h-3 mr-1" />
-            Desconectado
-          </Badge>
-        )
-      case "pending":
-        return (
-          <Badge className="bg-yellow-100 text-yellow-800 hover:bg-yellow-100">
-            <Clock className="w-3 h-3 mr-1" />
-            Pendiente
-          </Badge>
-        )
-      default:
-        return null
+  function markDirty() { setIsDirty(true) }
+
+  function handleCompanyChange(field: keyof CompanyForm, value: string) {
+    setCompany(prev => ({ ...prev, [field]: value }))
+    markDirty()
+  }
+
+  function handleLogoChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = ev => setLogoPreview(ev.target?.result as string)
+    reader.readAsDataURL(file)
+    markDirty()
+  }
+
+  async function handleSave() {
+    // TODO: persist to API
+    setIsDirty(false)
+  }
+
+  async function handleAlegraSync() {
+    setAlegraSyncing(true)
+    setAlegraSyncResult(null)
+    try {
+      const res = await apiClient.post("/integrations/alegra/sync-items")
+      if (!res.success) throw new Error(res.error?.message ?? "Error al sincronizar")
+      const d = res.data
+      setAlegraSyncResult({
+        pushed:   d?.pushed_items    ?? 0,
+        updated:  d?.updated_items   ?? 0,
+        pulled:   d?.pulled_items    ?? 0,
+        contacts: d?.synced_contacts ?? 0,
+        errors:   d?.errors          ?? [],
+      })
+      setAlegraInfo(prev => ({
+        ...prev,
+        syncedItems: d?.synced_items ?? prev.syncedItems,
+        lastSync:    d?.synced_at
+          ? new Date(d.synced_at).toLocaleString("es-CO")
+          : prev.lastSync,
+      }))
+    } catch (err) {
+      setAlegraSyncResult({
+        pushed: 0, updated: 0, pulled: 0, contacts: 0,
+        errors: [err instanceof Error ? err.message : "Error desconocido"],
+      })
+    } finally {
+      setAlegraSyncing(false)
     }
   }
 
-  const getRoleBadge = (role: User["role"]) => {
-    const colors = {
-      Administrator: "bg-blue-100 text-blue-800",
-      User: "bg-green-100 text-green-800",
-      "Read-only": "bg-gray-100 text-gray-800",
+  async function handleAlegraConnect() {
+    setAlegraConnecting(true)
+    setAlegraError(null)
+    try {
+      const res = await apiClient.post("/integrations/alegra/connect", {
+        email: alegraEmail,
+        token: alegraToken,
+      })
+      if (!res.success) {
+        const detail = (res.error as any)?.detail ?? res.error?.message
+        const msg =
+          typeof detail === "string"
+            ? detail
+            : Array.isArray(detail)
+            ? detail.map((d: any) => d.msg ?? JSON.stringify(d)).join(", ")
+            : "No se pudo conectar con Alegra"
+        throw new Error(msg)
+      }
+      setAlegraInfo({
+        businessName: res.data?.user?.email ?? "Cuenta Alegra",
+        connectedAt:  res.data?.connected_at
+          ? new Date(res.data.connected_at).toLocaleDateString("es-CO")
+          : new Date().toLocaleDateString("es-CO"),
+        syncedItems: 0,
+        lastSync: "",
+      })
+      setAlegraConnected(true)
+      setAlegraConnectOpen(false)
+      setAlegraEmail("")
+      setAlegraToken("")
+    } catch (err) {
+      setAlegraError(err instanceof Error ? err.message : "Error desconocido")
+    } finally {
+      setAlegraConnecting(false)
     }
-    return <Badge className={`${colors[role]} hover:${colors[role]}`}>{role}</Badge>
   }
 
-  const renderCompanyProfile = () => (
-    <div className="space-y-6">
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Building2 className="w-5 h-5" />
-            Información de la Empresa
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <Label htmlFor="company-name">Nombre de la Empresa</Label>
-              <Input id="company-name" defaultValue="Almacén Medellín JA" />
-            </div>
-            <div>
-              <Label htmlFor="nit">NIT</Label>
-              <Input id="nit" defaultValue="900123456-1" placeholder="Ej: 900123456-1" />
-            </div>
-            <div>
-              <Label htmlFor="business-name">Razón Social</Label>
-              <Input id="business-name" defaultValue="Almacén Medellín JA S.A.S" />
-            </div>
-            <div>
-              <Label htmlFor="phone">Teléfono</Label>
-              <Input id="phone" defaultValue="+57 4 123-4567" />
-            </div>
-            <div>
-              <Label htmlFor="email">Correo Electrónico</Label>
-              <Input id="email" type="email" defaultValue="contacto@almacenmedellinja.com" />
-            </div>
-            <div>
-              <Label htmlFor="website">Sitio Web</Label>
-              <Input id="website" defaultValue="www.almacenmedellinja.com" />
-            </div>
+  async function handleAlegraDisconnect() {
+    await apiClient.delete("/integrations/alegra/disconnect")
+    setAlegraConnected(false)
+    setAlegraInfo({ businessName: "", connectedAt: "", syncedItems: 0, lastSync: "" })
+    setAlegraSyncResult(null)
+    setAlegraConfigOpen(false)
+  }
+
+  // ─── Helpers ──────────────────────────────────────────────────────────────
+
+  const planColor: Record<typeof plan.type, string> = {
+    freemium: "bg-gray-100 text-gray-700",
+    basic:    "bg-blue-100 text-blue-700",
+    pro:      "bg-purple-100 text-purple-700",
+  }
+
+  const progressPct = Math.round((plan.used / plan.limit) * 100)
+  const progressColor =
+    progressPct > 90 ? "bg-red-500"
+    : progressPct > 70 ? "bg-yellow-400"
+    : "bg-green-500"
+
+  // ─── Render sections ──────────────────────────────────────────────────────
+
+  const renderEmpresa = () => (
+    <div className="flex gap-6 items-start">
+
+      {/* Left — Company info (2/3) */}
+      <div className="flex-1 bg-white rounded-xl border border-gray-200 p-6 space-y-5">
+        <div>
+          <h2 className="text-base font-semibold text-gray-900">Información de la empresa</h2>
+          <p className="text-sm text-gray-500 mt-0.5">Datos que aparecerán en tus documentos</p>
+        </div>
+
+        {/* Logo */}
+        <div className="flex items-center gap-4">
+          <div
+            className="w-16 h-16 rounded-full border-2 border-dashed border-gray-200 flex items-center justify-center overflow-hidden cursor-pointer hover:border-blue-400 transition-colors bg-gray-50"
+            onClick={() => logoInputRef.current?.click()}
+          >
+            {logoPreview
+              ? <img src={logoPreview} alt="logo" className="w-full h-full object-cover" />
+              : <Building2 className="w-6 h-6 text-gray-400" />
+            }
           </div>
-
           <div>
-            <Label htmlFor="address">Dirección Completa</Label>
-            <Textarea
-              id="address"
-              defaultValue="Carrera 70 #45-23, El Poblado, Medellín, Antioquia, Colombia"
-              rows={3}
+            <button
+              onClick={() => logoInputRef.current?.click()}
+              className="text-sm text-blue-600 hover:text-blue-700 font-medium flex items-center gap-1"
+            >
+              <Upload className="w-3.5 h-3.5" />
+              {logoPreview ? "Cambiar logo" : "Subir logo"}
+            </button>
+            <p className="text-xs text-gray-400 mt-0.5">PNG o JPG, máx 1 MB</p>
+          </div>
+          <input
+            ref={logoInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={handleLogoChange}
+          />
+        </div>
+
+        {/* Fields grid */}
+        <div className="grid grid-cols-2 gap-4">
+          <div className="col-span-2 space-y-1">
+            <Label className="text-sm text-gray-700">Nombre del negocio</Label>
+            <input
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              value={company.name}
+              onChange={e => handleCompanyChange("name", e.target.value)}
             />
           </div>
 
+          <div className="space-y-1">
+            <Label className="text-sm text-gray-700">NIT</Label>
+            <input
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              value={company.nit}
+              onChange={e => handleCompanyChange("nit", e.target.value)}
+            />
+          </div>
+
+          <div className="space-y-1">
+            <Label className="text-sm text-gray-700">Teléfono</Label>
+            <input
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              value={company.phone}
+              onChange={e => handleCompanyChange("phone", e.target.value)}
+            />
+          </div>
+
+          <div className="col-span-2 space-y-1">
+            <Label className="text-sm text-gray-700">Email de contacto</Label>
+            <input
+              type="email"
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              value={company.email}
+              onChange={e => handleCompanyChange("email", e.target.value)}
+            />
+          </div>
+
+          <div className="col-span-2 space-y-1">
+            <Label className="text-sm text-gray-700">Dirección</Label>
+            <textarea
+              rows={2}
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none"
+              value={company.address}
+              onChange={e => handleCompanyChange("address", e.target.value)}
+            />
+          </div>
+        </div>
+
+        {isDirty && (
+          <div className="pt-2">
+            <button
+              onClick={handleSave}
+              className="bg-blue-600 hover:bg-blue-700 text-white text-sm px-4 py-2 rounded-lg flex items-center gap-2 transition-colors"
+            >
+              <Save className="w-4 h-4" />
+              Guardar cambios
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Right — Plan (1/3) */}
+      <div className="w-72 shrink-0 bg-white rounded-xl border border-gray-200 p-6 space-y-5">
+        <div>
+          <h2 className="text-base font-semibold text-gray-900">Plan actual</h2>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 bg-purple-100 rounded-lg flex items-center justify-center">
+            <Crown className="w-5 h-5 text-purple-600" />
+          </div>
           <div>
-            <Label>Logo de la Empresa</Label>
-            <div className="mt-2 flex items-center gap-4">
-              <div className="w-20 h-20 bg-blue-100 rounded-lg flex items-center justify-center">
-                <Building2 className="w-8 h-8 text-blue-600" />
-              </div>
-              <Button variant="outline">
-                <Upload className="w-4 h-4 mr-2" />
-                Subir Logo
-              </Button>
-            </div>
+            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${planColor[plan.type]}`}>
+              {plan.name}
+            </span>
           </div>
-        </CardContent>
-      </Card>
+        </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Crown className="w-5 h-5" />
-            Plan Actual
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h3 className="font-semibold text-lg">Plan Premium</h3>
-              <p className="text-sm text-gray-600">Facturación ilimitada y funciones avanzadas</p>
-            </div>
-            <Badge className="bg-blue-100 text-blue-800 hover:bg-blue-100">Activo</Badge>
+        {/* Usage bar */}
+        <div className="space-y-2">
+          <div className="flex justify-between text-sm">
+            <span className="text-gray-600">Facturas este mes</span>
+            <span className="font-medium text-gray-900">{plan.used} / {plan.limit}</span>
           </div>
-
-          <div className="space-y-3">
-            <div>
-              <div className="flex justify-between text-sm mb-1">
-                <span>Facturas procesadas este mes</span>
-                <span>85 / Ilimitadas</span>
-              </div>
-              <Progress value={85} className="h-2" />
-            </div>
-
-            <div>
-              <div className="flex justify-between text-sm mb-1">
-                <span>Usuarios activos</span>
-                <span>3 / 10</span>
-              </div>
-              <Progress value={30} className="h-2" />
-            </div>
+          <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all ${progressColor}`}
+              style={{ width: `${progressPct}%` }}
+            />
           </div>
-
-          <Button variant="outline" className="w-full bg-transparent">
-            Gestionar Plan
-          </Button>
-        </CardContent>
-      </Card>
-    </div>
-  )
-
-  const renderTaxSettings = () => (
-    <div className="space-y-6">
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Receipt className="w-5 h-5" />
-            Régimen Tributario
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <Label htmlFor="tax-regime">Tipo de Régimen</Label>
-              <Select defaultValue="ordinary">
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="simplified">Régimen Simplificado</SelectItem>
-                  <SelectItem value="ordinary">Régimen Ordinario</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <Label htmlFor="tax-period">Período Fiscal</Label>
-              <Select defaultValue="monthly">
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="monthly">Mensual</SelectItem>
-                  <SelectItem value="bimonthly">Bimestral</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Configuración de IVA</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div>
-              <Label htmlFor="vat-rate">Tarifa de IVA (%)</Label>
-              <Select defaultValue="19">
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="0">0% - Exento</SelectItem>
-                  <SelectItem value="5">5%</SelectItem>
-                  <SelectItem value="19">19% - General</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <Label htmlFor="withholding-rate">Retención en la Fuente (%)</Label>
-              <Input id="withholding-rate" defaultValue="3.5" />
-            </div>
-            <div>
-              <Label htmlFor="ica-rate">Retención ICA (%)</Label>
-              <Input id="ica-rate" defaultValue="0.966" />
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Numeración de Facturas</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <Label htmlFor="invoice-prefix">Prefijo</Label>
-              <Input id="invoice-prefix" defaultValue="FAC" />
-            </div>
-            <div>
-              <Label htmlFor="next-number">Próximo Número</Label>
-              <Input id="next-number" defaultValue="2024-013" />
-            </div>
-          </div>
-          <div className="bg-blue-50 p-3 rounded-lg">
-            <p className="text-sm text-blue-800">
-              <Info className="w-4 h-4 inline mr-1" />
-              Próxima factura: <strong>FAC-2024-013</strong>
+          {progressPct > 80 && (
+            <p className="text-xs text-yellow-600 flex items-center gap-1">
+              <AlertTriangle className="w-3 h-3" />
+              Estás cerca del límite
             </p>
-          </div>
-        </CardContent>
-      </Card>
+          )}
+        </div>
+
+        <div className="flex items-center gap-2 text-sm text-gray-500">
+          <Clock className="w-4 h-4" />
+          <span>Se reinicia en <strong className="text-gray-700">{plan.daysToReset} días</strong></span>
+        </div>
+
+        <Separator />
+
+        <button
+          className="w-full border border-gray-200 hover:bg-gray-50 text-sm text-gray-700 py-2 rounded-lg transition-colors font-medium"
+          onClick={() => window.location.href = "/pricing"}
+        >
+          Ver planes →
+        </button>
+      </div>
     </div>
   )
 
-  const renderIntegrations = () => (
+  const renderIntegraciones = () => (
     <div className="space-y-6">
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Plug className="w-5 h-5" />
-            Sistemas POS
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {/* Alegra */}
-          <div className="flex items-center justify-between p-4 border rounded-lg">
-            <div className="flex items-center gap-3">
-              <div
-                className={`w-10 h-10 ${alegraConnected ? "bg-orange-100" : "bg-gray-100"} rounded-lg flex items-center justify-center`}
+      <div>
+        <h2 className="text-base font-semibold text-gray-900">Conecta FacturIA con tus herramientas</h2>
+        <p className="text-sm text-gray-500 mt-0.5">Sincroniza datos con los sistemas que ya usas</p>
+      </div>
+
+      {/* Alegra — full width, prominent */}
+      <div className="bg-white rounded-xl border border-gray-200 p-6">
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex items-center gap-4">
+            <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${alegraConnected ? "bg-orange-100" : "bg-gray-100"}`}>
+              <Zap className={`w-6 h-6 ${alegraConnected ? "text-orange-500" : "text-gray-400"}`} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-base font-semibold text-gray-900">Alegra</h3>
+                <span className={`flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full ${
+                  alegraConnected
+                    ? "bg-green-100 text-green-700"
+                    : "bg-gray-100 text-gray-500"
+                }`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${alegraConnected ? "bg-green-500" : "bg-gray-400"}`} />
+                  {alegraConnected ? "Conectado" : "No conectado"}
+                </span>
+              </div>
+              <p className="text-sm text-gray-500 mt-0.5">Software contable líder en Colombia</p>
+            </div>
+          </div>
+
+          {/* Actions */}
+          {alegraConnected ? (
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={handleAlegraSync}
+                disabled={alegraSyncing}
+                className="flex items-center gap-2 text-sm border border-orange-200 text-orange-700 hover:bg-orange-50 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-60"
               >
-                <Settings className={`w-5 h-5 ${alegraConnected ? "text-orange-600" : "text-gray-600"}`} />
-              </div>
-              <div>
-                <h4 className="font-medium">Alegra</h4>
-                <p className="text-sm text-gray-600">
-                  {alegraConnected ? alegraInfo.businessName : "Software de facturación y contabilidad"}
-                </p>
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              {getStatusBadge(alegraConnected ? "connected" : "disconnected")}
-
-              {alegraConnected ? (
-                <div className="flex items-center gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="border-orange-200 text-orange-700 hover:bg-orange-50"
-                    disabled={alegraSyncing}
-                    onClick={async () => {
-                      setAlegraSyncing(true)
-                      setAlegraSyncResult(null)
-                      try {
-                        const res = await apiClient.post("/integrations/alegra/sync-items")
-                        if (!res.success) throw new Error(res.error?.message ?? "Error al sincronizar")
-                        const d = res.data
-                        setAlegraSyncResult({
-                          pushed: d?.pushed_items ?? 0,
-                          updated: d?.updated_items ?? 0,
-                          pulled: d?.pulled_items ?? 0,
-                          contacts: d?.synced_contacts ?? 0,
-                          errors: d?.errors ?? [],
-                        })
-                        setAlegraInfo((prev) => ({
-                          ...prev,
-                          syncedItems: d?.synced_items ?? prev.syncedItems,
-                          lastSync: d?.synced_at
-                            ? new Date(d.synced_at).toLocaleString("es-CO")
-                            : prev.lastSync,
-                        }))
-                      } catch (err) {
-                        setAlegraSyncResult({
-                          pushed: 0, updated: 0, pulled: 0, contacts: 0,
-                          errors: [err instanceof Error ? err.message : "Error desconocido"],
-                        })
-                      } finally {
-                        setAlegraSyncing(false)
-                      }
-                    }}
-                  >
-                    {alegraSyncing ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <RefreshCw className="w-4 h-4" />
-                    )}
-                    <span className="ml-1.5">{alegraSyncing ? "Sincronizando..." : "Sincronizar"}</span>
-                  </Button>
-                  <Dialog open={alegraConfigOpen} onOpenChange={setAlegraConfigOpen}>
-                    <DialogTrigger asChild>
-                      <Button variant="outline" size="sm">
-                        Configurar
-                      </Button>
-                    </DialogTrigger>
-                    <DialogContent>
-                      <DialogHeader>
-                        <DialogTitle>Alegra — Configuración</DialogTitle>
-                      </DialogHeader>
-                      <div className="space-y-4">
-                        <div className="space-y-1">
-                          <p className="text-sm font-medium text-gray-700">Cuenta</p>
-                          <p className="text-sm text-gray-900">{alegraInfo.businessName}</p>
-                        </div>
-                        <div className="space-y-1">
-                          <p className="text-sm font-medium text-gray-700">Conectado desde</p>
-                          <p className="text-sm text-gray-900">{alegraInfo.connectedAt}</p>
-                        </div>
-                        <div className="grid grid-cols-2 gap-4">
-                          <div className="bg-gray-50 rounded-lg p-3">
-                            <p className="text-xs text-gray-500">Ítems en Alegra</p>
-                            <p className="text-lg font-bold text-gray-900">{alegraInfo.syncedItems}</p>
-                          </div>
-                          <div className="bg-gray-50 rounded-lg p-3">
-                            <p className="text-xs text-gray-500">Última sync</p>
-                            <p className="text-sm font-medium text-gray-900">{alegraInfo.lastSync || "—"}</p>
-                          </div>
-                        </div>
-                        {alegraSyncResult && (
-                          <div className="bg-blue-50 rounded-lg p-3 text-sm">
-                            <p className="font-medium text-gray-700 mb-2">Último resultado</p>
-                            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-gray-600">
-                              <span>Creados en Alegra</span>
-                              <span className="font-medium text-green-700">+{alegraSyncResult.pushed}</span>
-                              <span>Actualizados en Alegra</span>
-                              <span className="font-medium text-blue-700">{alegraSyncResult.updated}</span>
-                              <span>Precios recibidos</span>
-                              <span className="font-medium text-purple-700">{alegraSyncResult.pulled}</span>
-                              <span>Contactos</span>
-                              <span className="font-medium text-orange-700">{alegraSyncResult.contacts}</span>
-                            </div>
-                            {alegraSyncResult.errors.length > 0 && (
-                              <div className="mt-2 pt-2 border-t border-blue-200">
-                                <p className="text-xs text-red-600 font-medium">{alegraSyncResult.errors.length} error(es):</p>
-                                <ul className="text-xs text-red-500 mt-1 space-y-0.5 max-h-20 overflow-y-auto">
-                                  {alegraSyncResult.errors.map((e, i) => (
-                                    <li key={i} className="truncate">• {e}</li>
-                                  ))}
-                                </ul>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                        <Separator />
-                        <Button
-                          variant="outline"
-                          className="w-full text-red-600 hover:text-red-700 border-red-200 hover:border-red-300"
-                          onClick={async () => {
-                            await apiClient.delete("/integrations/alegra/disconnect")
-                            setAlegraConnected(false)
-                            setAlegraInfo({ businessName: "", connectedAt: "", syncedItems: 0, lastSync: "" })
-                            setAlegraSyncResult(null)
-                            setAlegraConfigOpen(false)
-                          }}
-                        >
-                          <Trash2 className="w-4 h-4 mr-2" />
-                          Desconectar
-                        </Button>
+                {alegraSyncing
+                  ? <Loader2 className="w-4 h-4 animate-spin" />
+                  : <RefreshCw className="w-4 h-4" />
+                }
+                {alegraSyncing ? "Sincronizando..." : "Sincronizar catálogo"}
+              </button>
+              <Dialog open={alegraConfigOpen} onOpenChange={setAlegraConfigOpen}>
+                <DialogTrigger asChild>
+                  <button className="text-sm border border-gray-200 text-gray-600 hover:bg-gray-50 px-3 py-1.5 rounded-lg transition-colors">
+                    Configurar
+                  </button>
+                </DialogTrigger>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>Alegra — Configuración</DialogTitle>
+                  </DialogHeader>
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="bg-gray-50 rounded-lg p-3">
+                        <p className="text-xs text-gray-500">Cuenta</p>
+                        <p className="text-sm font-medium text-gray-900 truncate">{alegraInfo.businessName}</p>
                       </div>
-                    </DialogContent>
-                  </Dialog>
-                </div>
-              ) : (
-                <Dialog
-                  open={alegraConnectOpen}
-                  onOpenChange={(open) => {
-                    setAlegraConnectOpen(open)
-                    setAlegraError(null)
-                    if (!open) {
-                      setAlegraEmail("")
-                      setAlegraToken("")
-                    }
-                  }}
-                >
-                  <DialogTrigger asChild>
-                    <Button variant="outline" size="sm">
-                      Conectar
-                    </Button>
-                  </DialogTrigger>
-                  <DialogContent>
-                    <DialogHeader>
-                      <DialogTitle>Conectar con Alegra</DialogTitle>
-                    </DialogHeader>
-                    <div className="space-y-4">
-                      <div>
-                        <Label htmlFor="alegra-email">Email de tu cuenta Alegra</Label>
-                        <Input
-                          id="alegra-email"
-                          type="email"
-                          placeholder="tu@empresa.com"
-                          value={alegraEmail}
-                          onChange={(e) => setAlegraEmail(e.target.value)}
-                        />
+                      <div className="bg-gray-50 rounded-lg p-3">
+                        <p className="text-xs text-gray-500">Conectado desde</p>
+                        <p className="text-sm font-medium text-gray-900">{alegraInfo.connectedAt || "—"}</p>
                       </div>
-                      <div>
-                        <Label htmlFor="alegra-token">Token de API</Label>
-                        <Input
-                          id="alegra-token"
-                          type="password"
-                          placeholder="Pega tu token aquí"
-                          value={alegraToken}
-                          onChange={(e) => setAlegraToken(e.target.value)}
-                        />
-                        <p className="text-xs text-gray-500 mt-1">
-                          Encuéntralo en Alegra → Configuración → Integraciones → Integración manual API
-                        </p>
+                      <div className="bg-gray-50 rounded-lg p-3">
+                        <p className="text-xs text-gray-500">Ítems sincronizados</p>
+                        <p className="text-lg font-bold text-gray-900">{alegraInfo.syncedItems}</p>
                       </div>
-                      {alegraError && (
-                        <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-                          <p className="text-sm text-red-700">{alegraError}</p>
-                        </div>
-                      )}
-                      <Button
-                        className="w-full bg-blue-600 hover:bg-blue-700"
-                        disabled={alegraConnecting || !alegraEmail.trim() || !alegraToken.trim()}
-                        onClick={async () => {
-                          setAlegraConnecting(true)
-                          setAlegraError(null)
-                          try {
-                            const res = await apiClient.post("/integrations/alegra/connect", {
-                              email: alegraEmail,
-                              token: alegraToken,
-                            })
-                            if (!res.success) {
-                              const detail = (res.error as any)?.detail ?? res.error?.message
-                              const msg =
-                                typeof detail === "string"
-                                  ? detail
-                                  : Array.isArray(detail)
-                                  ? detail.map((d: any) => d.msg ?? JSON.stringify(d)).join(", ")
-                                  : "No se pudo conectar con Alegra"
-                              throw new Error(msg)
-                            }
-                            const data = res.data
-                            setAlegraInfo({
-                              businessName: data.user?.email ?? "Cuenta Alegra",
-                              connectedAt: data.connected_at
-                                ? new Date(data.connected_at).toLocaleDateString("es-CO")
-                                : new Date().toLocaleDateString("es-CO"),
-                              syncedItems: 0,
-                            })
-                            setAlegraConnected(true)
-                            setAlegraConnectOpen(false)
-                          } catch (err: unknown) {
-                            setAlegraError(err instanceof Error ? err.message : "Error desconocido")
-                          } finally {
-                            setAlegraConnecting(false)
-                          }
-                        }}
-                      >
-                        {alegraConnecting ? (
-                          <>
-                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                            Validando...
-                          </>
-                        ) : (
-                          "Conectar"
-                        )}
-                      </Button>
+                      <div className="bg-gray-50 rounded-lg p-3">
+                        <p className="text-xs text-gray-500">Última sync</p>
+                        <p className="text-sm font-medium text-gray-900">{alegraInfo.lastSync || "—"}</p>
+                      </div>
                     </div>
-                  </DialogContent>
-                </Dialog>
-              )}
-            </div>
-          </div>
-        </CardContent>
-      </Card>
 
-    </div>
-  )
+                    {alegraSyncResult && (
+                      <div className="bg-blue-50 rounded-lg p-4 text-sm space-y-1">
+                        <p className="font-medium text-gray-700 mb-2">Último resultado</p>
+                        <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-gray-600">
+                          <span>Creados en Alegra</span>
+                          <span className="font-medium text-green-700">+{alegraSyncResult.pushed}</span>
+                          <span>Actualizados</span>
+                          <span className="font-medium text-blue-700">{alegraSyncResult.updated}</span>
+                          <span>Precios recibidos</span>
+                          <span className="font-medium text-purple-700">{alegraSyncResult.pulled}</span>
+                          <span>Contactos</span>
+                          <span className="font-medium text-orange-700">{alegraSyncResult.contacts}</span>
+                        </div>
+                        {alegraSyncResult.errors.length > 0 && (
+                          <div className="mt-2 pt-2 border-t border-blue-200">
+                            <p className="text-xs text-red-600 font-medium">{alegraSyncResult.errors.length} error(es):</p>
+                            <ul className="text-xs text-red-500 mt-1 space-y-0.5 max-h-20 overflow-y-auto">
+                              {alegraSyncResult.errors.map((e, i) => (
+                                <li key={i} className="truncate">• {e}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    )}
 
-  const renderUsersPermissions = () => (
-    <div className="space-y-6">
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Users className="w-5 h-5" />
-              Usuarios del Sistema
+                    <Separator />
+                    <button
+                      onClick={handleAlegraDisconnect}
+                      className="w-full bg-red-50 text-red-600 hover:bg-red-100 text-sm py-2 rounded-lg flex items-center justify-center gap-2 transition-colors"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                      Desconectar cuenta
+                    </button>
+                  </div>
+                </DialogContent>
+              </Dialog>
             </div>
-            <Dialog open={isInviteModalOpen} onOpenChange={setIsInviteModalOpen}>
+          ) : (
+            <Dialog
+              open={alegraConnectOpen}
+              onOpenChange={(open) => {
+                setAlegraConnectOpen(open)
+                setAlegraError(null)
+                if (!open) { setAlegraEmail(""); setAlegraToken("") }
+              }}
+            >
               <DialogTrigger asChild>
-                <Button className="bg-blue-600 hover:bg-blue-700">
-                  <Plus className="w-4 h-4 mr-2" />
-                  Invitar Usuario
-                </Button>
+                <button className="bg-blue-600 hover:bg-blue-700 text-white text-sm px-4 py-2 rounded-lg transition-colors font-medium shrink-0 flex items-center gap-2">
+                  Conectar con Alegra →
+                </button>
               </DialogTrigger>
               <DialogContent>
                 <DialogHeader>
-                  <DialogTitle>Invitar Nuevo Usuario</DialogTitle>
+                  <DialogTitle>Conectar con Alegra</DialogTitle>
                 </DialogHeader>
                 <div className="space-y-4">
-                  <div>
-                    <Label htmlFor="invite-email">Correo Electrónico</Label>
-                    <Input id="invite-email" type="email" placeholder="usuario@empresa.com" />
+                  <div className="space-y-1">
+                    <Label className="text-sm text-gray-700">Email de tu cuenta Alegra</Label>
+                    <input
+                      type="email"
+                      placeholder="tu@empresa.com"
+                      className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      value={alegraEmail}
+                      onChange={e => setAlegraEmail(e.target.value)}
+                    />
                   </div>
-                  <div>
-                    <Label htmlFor="invite-role">Rol</Label>
-                    <Select>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Seleccionar rol" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="administrator">Administrador</SelectItem>
-                        <SelectItem value="user">Usuario</SelectItem>
-                        <SelectItem value="readonly">Solo Lectura</SelectItem>
-                      </SelectContent>
-                    </Select>
+                  <div className="space-y-1">
+                    <Label className="text-sm text-gray-700">Token de API</Label>
+                    <input
+                      type="password"
+                      placeholder="Pega tu token aquí"
+                      className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      value={alegraToken}
+                      onChange={e => setAlegraToken(e.target.value)}
+                    />
+                    <p className="text-xs text-gray-400">
+                      Encuéntralo en Alegra → Configuración → Integraciones → API
+                    </p>
                   </div>
-                  <div className="flex gap-2">
-                    <Button className="bg-blue-600 hover:bg-blue-700 flex-1">Enviar Invitación</Button>
-                    <Button variant="outline" onClick={() => setIsInviteModalOpen(false)}>
-                      Cancelar
-                    </Button>
-                  </div>
+                  {alegraError && (
+                    <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                      <p className="text-sm text-red-700">{alegraError}</p>
+                    </div>
+                  )}
+                  <button
+                    className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm py-2.5 rounded-lg transition-colors font-medium flex items-center justify-center gap-2"
+                    disabled={alegraConnecting || !alegraEmail.trim() || !alegraToken.trim()}
+                    onClick={handleAlegraConnect}
+                  >
+                    {alegraConnecting
+                      ? <><Loader2 className="w-4 h-4 animate-spin" /> Validando...</>
+                      : "Conectar"
+                    }
+                  </button>
                 </div>
               </DialogContent>
             </Dialog>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="p-0">
+          )}
+        </div>
+
+        {/* Connected stats inline */}
+        {alegraConnected && (
+          <div className="mt-4 pt-4 border-t border-gray-100 grid grid-cols-3 gap-4 text-sm">
+            <div>
+              <p className="text-gray-400 text-xs">Cuenta</p>
+              <p className="font-medium text-gray-800 truncate">{alegraInfo.businessName}</p>
+            </div>
+            <div>
+              <p className="text-gray-400 text-xs">Última sincronización</p>
+              <p className="font-medium text-gray-800">{alegraInfo.lastSync || "Nunca"}</p>
+            </div>
+            <div>
+              <p className="text-gray-400 text-xs">Ítems sincronizados</p>
+              <p className="font-medium text-gray-800">{alegraInfo.syncedItems}</p>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Secondary integrations grid */}
+      <div className="grid grid-cols-2 gap-4">
+        {/* AWS Textract */}
+        <div className="bg-white rounded-xl border border-gray-200 p-5">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-yellow-100 rounded-lg flex items-center justify-center">
+              <Zap className="w-5 h-5 text-yellow-600" />
+            </div>
+            <div className="flex-1">
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-semibold text-gray-900">AWS Textract</h4>
+                <span className="flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-green-100 text-green-700">
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                  Activo
+                </span>
+              </div>
+              <p className="text-xs text-gray-500 mt-0.5">Extracción de texto por OCR</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Siigo — coming soon */}
+        <div className="bg-white rounded-xl border border-gray-200 p-5 opacity-70">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-gray-100 rounded-lg flex items-center justify-center">
+              <Plug className="w-5 h-5 text-gray-400" />
+            </div>
+            <div className="flex-1">
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-semibold text-gray-700">Siigo</h4>
+                <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">
+                  Pronto
+                </span>
+              </div>
+              <p className="text-xs text-gray-400 mt-0.5">Software contable colombiano</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Wompi — coming soon */}
+        <div className="bg-white rounded-xl border border-gray-200 p-5 opacity-70">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-gray-100 rounded-lg flex items-center justify-center">
+              <Plug className="w-5 h-5 text-gray-400" />
+            </div>
+            <div className="flex-1">
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-semibold text-gray-700">Wompi</h4>
+                <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">
+                  Pronto
+                </span>
+              </div>
+              <p className="text-xs text-gray-400 mt-0.5">Pagos en línea</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+
+  const renderUsuarios = () => (
+    <div className="space-y-6">
+      <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-base font-semibold text-gray-900">Usuarios del sistema</h2>
+            <p className="text-sm text-gray-500 mt-0.5">
+              {users.length} de 3 usuarios permitidos en tu plan
+            </p>
+          </div>
+          <Dialog open={inviteOpen} onOpenChange={setInviteOpen}>
+            <DialogTrigger asChild>
+              <button className="bg-blue-600 hover:bg-blue-700 text-white text-sm px-4 py-2 rounded-lg flex items-center gap-2 transition-colors">
+                <Plus className="w-4 h-4" />
+                Invitar usuario
+              </button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Invitar nuevo usuario</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-4">
+                <div className="space-y-1">
+                  <Label className="text-sm text-gray-700">Correo electrónico</Label>
+                  <input
+                    type="email"
+                    placeholder="usuario@empresa.com"
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    value={inviteEmail}
+                    onChange={e => setInviteEmail(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-sm text-gray-700">Rol</Label>
+                  <Select value={inviteRole} onValueChange={v => setInviteRole(v as "Admin" | "Usuario")}>
+                    <SelectTrigger className="border-gray-200 text-sm">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="Admin">Admin</SelectItem>
+                      <SelectItem value="Usuario">Usuario</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    className="flex-1 bg-blue-600 hover:bg-blue-700 text-white text-sm py-2 rounded-lg transition-colors"
+                    onClick={() => setInviteOpen(false)}
+                  >
+                    Enviar invitación
+                  </button>
+                  <button
+                    className="border border-gray-200 hover:bg-gray-50 text-sm px-4 py-2 rounded-lg transition-colors"
+                    onClick={() => setInviteOpen(false)}
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              </div>
+            </DialogContent>
+          </Dialog>
+        </div>
+
+        {/* Table or empty state */}
+        {usersLoading ? (
+          <div className="flex items-center justify-center py-12 text-gray-400">
+            <Loader2 className="w-5 h-5 animate-spin mr-2" />
+            Cargando usuarios...
+          </div>
+        ) : users.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-12 text-gray-400">
+            <Users className="w-10 h-10 mb-3 text-gray-300" />
+            <p className="text-sm font-medium text-gray-500">No hay usuarios aún</p>
+            <p className="text-xs text-gray-400 mt-1">Invita a tu equipo para colaborar</p>
+          </div>
+        ) : (
           <Table>
             <TableHeader>
-              <TableRow className="bg-gray-50">
-                <TableHead>Usuario</TableHead>
-                <TableHead>Rol</TableHead>
-                <TableHead>Estado</TableHead>
-                <TableHead>Última Actividad</TableHead>
-                <TableHead>Acciones</TableHead>
+              <TableRow className="bg-gray-50 border-0">
+                <TableHead className="text-xs text-gray-500 font-medium">Usuario</TableHead>
+                <TableHead className="text-xs text-gray-500 font-medium">Rol</TableHead>
+                <TableHead className="text-xs text-gray-500 font-medium">Estado</TableHead>
+                <TableHead className="text-xs text-gray-500 font-medium w-20"></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {sampleUsers.map((user) => (
-                <TableRow key={user.id}>
+              {users.map((user) => (
+                <TableRow key={user.id} className="border-gray-100">
                   <TableCell>
                     <div className="flex items-center gap-3">
                       <Avatar className="w-8 h-8">
-                        <AvatarFallback className="bg-blue-600 text-white text-xs">
-                          {user.name
-                            .split(" ")
-                            .map((n) => n[0])
-                            .join("")}
+                        <AvatarFallback className="bg-blue-100 text-blue-700 text-xs font-semibold">
+                          {user.name.split(" ").map(n => n[0]).join("").slice(0, 2)}
                         </AvatarFallback>
                       </Avatar>
                       <div>
-                        <p className="font-medium">{user.name}</p>
-                        <p className="text-sm text-gray-600">{user.email}</p>
+                        <p className="text-sm font-medium text-gray-900">{user.name}</p>
+                        <p className="text-xs text-gray-400">{user.email}</p>
                       </div>
                     </div>
                   </TableCell>
-                  <TableCell>{getRoleBadge(user.role)}</TableCell>
                   <TableCell>
-                    <Badge
-                      className={
-                        user.status === "active"
-                          ? "bg-green-100 text-green-800 hover:bg-green-100"
-                          : "bg-gray-100 text-gray-800 hover:bg-gray-100"
-                      }
-                    >
+                    <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                      user.role === "Admin"
+                        ? "bg-blue-100 text-blue-700"
+                        : "bg-gray-100 text-gray-600"
+                    }`}>
+                      {user.role}
+                    </span>
+                  </TableCell>
+                  <TableCell>
+                    <span className={`flex items-center gap-1 text-xs font-medium w-fit px-2 py-0.5 rounded-full ${
+                      user.status === "active"
+                        ? "bg-green-100 text-green-700"
+                        : "bg-gray-100 text-gray-500"
+                    }`}>
+                      <span className={`w-1.5 h-1.5 rounded-full ${user.status === "active" ? "bg-green-500" : "bg-gray-400"}`} />
                       {user.status === "active" ? "Activo" : "Inactivo"}
-                    </Badge>
+                    </span>
                   </TableCell>
-                  <TableCell className="text-sm text-gray-600">{user.lastActivity}</TableCell>
                   <TableCell>
-                    <div className="flex gap-2">
-                      <Button variant="ghost" size="sm">
-                        <Edit className="w-4 h-4" />
-                      </Button>
-                      <Button variant="ghost" size="sm" className="text-red-600 hover:text-red-700">
-                        <Trash2 className="w-4 h-4" />
-                      </Button>
-                    </div>
+                    <button className="text-gray-400 hover:text-red-500 transition-colors p-1 rounded">
+                      <Trash2 className="w-4 h-4" />
+                    </button>
                   </TableCell>
                 </TableRow>
               ))}
             </TableBody>
           </Table>
-        </CardContent>
-      </Card>
+        )}
+      </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Shield className="w-5 h-5" />
-            Permisos por Módulo
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-              <div className="font-medium">Módulo</div>
-              <div className="font-medium text-center">Administrador</div>
-              <div className="font-medium text-center">Usuario</div>
-              <div className="font-medium text-center">Solo Lectura</div>
-            </div>
-            <Separator />
-            {["Facturas", "Inventario", "Reportes", "Configuración"].map((module) => (
-              <div key={module} className="grid grid-cols-1 md:grid-cols-4 gap-4 items-center">
-                <div>{module}</div>
-                <div className="text-center">
-                  <CheckCircle className="w-5 h-5 text-green-600 mx-auto" />
-                </div>
-                <div className="text-center">
-                  {module !== "Configuración" ? (
-                    <CheckCircle className="w-5 h-5 text-green-600 mx-auto" />
-                  ) : (
-                    <XCircle className="w-5 h-5 text-red-600 mx-auto" />
-                  )}
-                </div>
-                <div className="text-center">
-                  {module === "Reportes" ? (
-                    <Eye className="w-5 h-5 text-blue-600 mx-auto" />
-                  ) : (
-                    <XCircle className="w-5 h-5 text-red-600 mx-auto" />
-                  )}
-                </div>
+      {/* Roles legend */}
+      <div className="bg-white rounded-xl border border-gray-200 p-6">
+        <h3 className="text-sm font-semibold text-gray-900 mb-4">Permisos por rol</h3>
+        <div className="grid grid-cols-3 gap-px bg-gray-100 rounded-lg overflow-hidden text-sm">
+          <div className="bg-white px-4 py-3 font-medium text-gray-700">Módulo</div>
+          <div className="bg-white px-4 py-3 font-medium text-center text-blue-700">Admin</div>
+          <div className="bg-white px-4 py-3 font-medium text-center text-gray-600">Usuario</div>
+          {["Facturas", "Inventario", "Reportes", "Configuración"].map(mod => (
+            <>
+              <div key={mod + "-label"} className="bg-white px-4 py-3 text-gray-600">{mod}</div>
+              <div key={mod + "-admin"} className="bg-white px-4 py-3 flex justify-center">
+                <CheckCircle className="w-4 h-4 text-green-500" />
               </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
+              <div key={mod + "-user"} className="bg-white px-4 py-3 flex justify-center">
+                {mod !== "Configuración"
+                  ? <CheckCircle className="w-4 h-4 text-green-500" />
+                  : <XCircle className="w-4 h-4 text-gray-300" />
+                }
+              </div>
+            </>
+          ))}
+        </div>
+      </div>
     </div>
   )
 
-  const renderNotifications = () => (
-    <div className="space-y-6">
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Bell className="w-5 h-5" />
-            Notificaciones por Email
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {[
-            { label: "Nuevas facturas procesadas", enabled: true },
-            { label: "Errores de procesamiento", enabled: true },
-            { label: "Stock bajo en inventario", enabled: true },
-            { label: "Reportes semanales", enabled: false },
-            { label: "Actualizaciones del sistema", enabled: true },
-          ].map((notification, index) => (
-            <div key={index} className="flex items-center justify-between">
+  const renderNotificaciones = () => (
+    <div className="max-w-2xl space-y-4">
+      {/* Alertas operación */}
+      <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
+        <div>
+          <h2 className="text-base font-semibold text-gray-900">Alertas de operación</h2>
+          <p className="text-sm text-gray-500 mt-0.5">Notificaciones por email sobre eventos del sistema</p>
+        </div>
+        <div className="space-y-3">
+          {([
+            { key: "newInvoices",  label: "Nuevas facturas procesadas",   desc: "Cuando se completa el procesamiento de una factura" },
+            { key: "procErrors",   label: "Errores de procesamiento",      desc: "Cuando una factura no puede procesarse correctamente" },
+            { key: "lowStock",     label: "Stock bajo en inventario",      desc: "Cuando un producto cae por debajo del mínimo" },
+          ] as { key: keyof typeof notifs; label: string; desc: string }[]).map(({ key, label, desc }) => (
+            <div key={key} className="flex items-center justify-between py-1">
               <div>
-                <p className="font-medium">{notification.label}</p>
-                <p className="text-sm text-gray-600">{notification.enabled ? "Activado" : "Desactivado"}</p>
+                <p className="text-sm font-medium text-gray-800">{label}</p>
+                <p className="text-xs text-gray-400">{desc}</p>
               </div>
-              <Switch defaultChecked={notification.enabled} />
+              <Switch
+                checked={notifs[key]}
+                onCheckedChange={v => setNotifs(prev => ({ ...prev, [key]: v }))}
+              />
             </div>
           ))}
-        </CardContent>
-      </Card>
+        </div>
+      </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Phone className="w-5 h-5" />
-            Notificaciones SMS
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div>
-            <Label htmlFor="sms-number">Número de Teléfono</Label>
-            <Input id="sms-number" defaultValue="+57 300 123 4567" />
-          </div>
-          {[
-            { label: "Alertas críticas del sistema", enabled: true },
-            { label: "Confirmaciones de procesamiento", enabled: false },
-            { label: "Recordatorios de vencimiento", enabled: true },
-          ].map((notification, index) => (
-            <div key={index} className="flex items-center justify-between">
+      {/* Reportes periódicos */}
+      <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
+        <div>
+          <h2 className="text-base font-semibold text-gray-900">Reportes periódicos</h2>
+          <p className="text-sm text-gray-500 mt-0.5">Resúmenes automáticos enviados a tu email</p>
+        </div>
+        <div className="space-y-3">
+          {([
+            { key: "weeklyReport",  label: "Reporte semanal",  desc: "Resumen de actividad cada lunes" },
+            { key: "monthlyReport", label: "Reporte mensual",  desc: "Cierre mensual con métricas clave" },
+          ] as { key: keyof typeof notifs; label: string; desc: string }[]).map(({ key, label, desc }) => (
+            <div key={key} className="flex items-center justify-between py-1">
               <div>
-                <p className="font-medium">{notification.label}</p>
+                <p className="text-sm font-medium text-gray-800">{label}</p>
+                <p className="text-xs text-gray-400">{desc}</p>
               </div>
-              <Switch defaultChecked={notification.enabled} />
+              <Switch
+                checked={notifs[key]}
+                onCheckedChange={v => setNotifs(prev => ({ ...prev, [key]: v }))}
+              />
             </div>
           ))}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Frecuencia de Notificaciones</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div>
-              <Label htmlFor="email-frequency">Email</Label>
-              <Select defaultValue="immediate">
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="immediate">Inmediato</SelectItem>
-                  <SelectItem value="daily">Diario</SelectItem>
-                  <SelectItem value="weekly">Semanal</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <Label htmlFor="sms-frequency">SMS</Label>
-              <Select defaultValue="immediate">
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="immediate">Inmediato</SelectItem>
-                  <SelectItem value="daily">Diario</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <Label htmlFor="dashboard-frequency">Dashboard</Label>
-              <Select defaultValue="realtime">
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="realtime">Tiempo Real</SelectItem>
-                  <SelectItem value="hourly">Cada Hora</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
     </div>
   )
 
-  const renderBackupExport = () => (
-    <div className="space-y-6">
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Download className="w-5 h-5" />
-            Exportar Datos
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <Button variant="outline" className="h-20 flex flex-col gap-2 bg-transparent">
-              <Download className="w-6 h-6" />
-              <span>Exportar CSV</span>
-            </Button>
-            <Button variant="outline" className="h-20 flex flex-col gap-2 bg-transparent">
-              <Download className="w-6 h-6" />
-              <span>Exportar Excel</span>
-            </Button>
-            <Button variant="outline" className="h-20 flex flex-col gap-2 bg-transparent">
-              <Download className="w-6 h-6" />
-              <span>Exportar PDF</span>
-            </Button>
-          </div>
-          <div className="bg-yellow-50 p-3 rounded-lg">
-            <p className="text-sm text-yellow-800">
-              <AlertTriangle className="w-4 h-4 inline mr-1" />
-              La exportación puede tardar varios minutos dependiendo del volumen de datos.
-            </p>
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Database className="w-5 h-5" />
-            Respaldo Automático
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="font-medium">Respaldo Automático</p>
-              <p className="text-sm text-gray-600">Crear copias de seguridad automáticamente</p>
-            </div>
-            <Switch defaultChecked={true} />
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <Label htmlFor="backup-frequency">Frecuencia</Label>
-              <Select defaultValue="daily">
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="daily">Diario</SelectItem>
-                  <SelectItem value="weekly">Semanal</SelectItem>
-                  <SelectItem value="monthly">Mensual</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <Label htmlFor="backup-time">Hora</Label>
-              <Input id="backup-time" type="time" defaultValue="02:00" />
-            </div>
-          </div>
-
-          <div>
-            <Label htmlFor="backup-retention">Retención (días)</Label>
-            <Input id="backup-retention" type="number" defaultValue="30" />
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Historial de Respaldos</CardTitle>
-        </CardHeader>
-        <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow className="bg-gray-50">
-                <TableHead>Fecha</TableHead>
-                <TableHead>Tipo</TableHead>
-                <TableHead>Tamaño</TableHead>
-                <TableHead>Estado</TableHead>
-                <TableHead>Acciones</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {[
-                { date: "2024-01-15 02:00", type: "Automático", size: "45.2 MB", status: "Completado" },
-                { date: "2024-01-14 02:00", type: "Automático", size: "44.8 MB", status: "Completado" },
-                { date: "2024-01-13 14:30", type: "Manual", size: "44.1 MB", status: "Completado" },
-                { date: "2024-01-13 02:00", type: "Automático", size: "43.9 MB", status: "Completado" },
-              ].map((backup, index) => (
-                <TableRow key={index}>
-                  <TableCell>{backup.date}</TableCell>
-                  <TableCell>
-                    <Badge
-                      className={
-                        backup.type === "Automático"
-                          ? "bg-blue-100 text-blue-800 hover:bg-blue-100"
-                          : "bg-green-100 text-green-800 hover:bg-green-100"
-                      }
-                    >
-                      {backup.type}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>{backup.size}</TableCell>
-                  <TableCell>
-                    <Badge className="bg-green-100 text-green-800 hover:bg-green-100">
-                      <CheckCircle className="w-3 h-3 mr-1" />
-                      {backup.status}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex gap-2">
-                      <Button variant="ghost" size="sm">
-                        <Download className="w-4 h-4" />
-                      </Button>
-                      <Button variant="ghost" size="sm">
-                        Restaurar
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
-    </div>
-  )
+  // ─── Main render ──────────────────────────────────────────────────────────
 
   return (
-    <div className="flex h-full bg-gray-50">
-      {/* Sidebar */}
-      <div className="w-80 bg-gray-900 text-white flex flex-col">
-        <div className="p-6">
-          <h1 className="text-xl font-bold text-blue-400">Configuración</h1>
-          <p className="text-sm text-gray-400 mt-1">Gestiona tu cuenta y preferencias</p>
-        </div>
+    <div className="flex flex-col h-full bg-gray-50">
 
-        <nav className="flex-1 px-4">
-          {tabs.map((tab) => (
+      {/* ── Page header ── */}
+      <div className="bg-white border-b border-gray-200 px-8 py-6">
+        <h1 className="text-2xl font-bold text-gray-900">Configuración</h1>
+        <p className="text-sm text-gray-500 mt-1">Gestiona tu cuenta y preferencias de FacturIA</p>
+      </div>
+
+      {/* ── Horizontal tabs ── */}
+      <div className="bg-white border-b border-gray-200 px-8 overflow-x-auto">
+        <nav className="flex gap-8 min-w-max">
+          {tabs.map(tab => (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg mb-2 text-left transition-colors ${
-                activeTab === tab.id ? "bg-blue-600 text-white" : "text-gray-300 hover:bg-gray-800 hover:text-white"
-              }`}
+              className={`
+                flex items-center gap-2 py-4 text-sm font-medium
+                border-b-2 transition-colors whitespace-nowrap
+                ${activeTab === tab.id
+                  ? "border-blue-600 text-blue-600"
+                  : "border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300"}
+              `}
             >
-              <tab.icon className="w-5 h-5" />
+              <tab.icon className="h-4 w-4" />
               {tab.label}
             </button>
           ))}
         </nav>
-
-        <div className="p-4">
-          <div className="flex items-center gap-2 text-sm text-gray-400">
-            <div className="flex items-center gap-2">
-              <div className={`w-2 h-2 rounded-full ${autoSave ? "bg-green-500" : "bg-gray-500"}`}></div>
-              <span>{autoSave ? "Guardado automático activado" : "Guardado manual"}</span>
-            </div>
-          </div>
-        </div>
       </div>
 
-      {/* Main Content */}
-      <div className="flex-1 flex flex-col">
-        {/* Content Header */}
-        <div className="bg-white border-b border-gray-200 px-6 py-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-xl font-semibold text-gray-800">{tabs.find((tab) => tab.id === activeTab)?.label}</h2>
-              <p className="text-sm text-gray-600 mt-1">
-                {activeTab === "company" && "Información básica de tu empresa"}
-                {activeTab === "tax" && "Configuración fiscal y tributaria"}
-                {activeTab === "integrations" && "Conecta con sistemas externos"}
-                {activeTab === "users" && "Gestiona usuarios y permisos"}
-                {activeTab === "notifications" && "Configura alertas y notificaciones"}
-                {activeTab === "backup" && "Respaldo y exportación de datos"}
-              </p>
-            </div>
-            <Button className="bg-blue-600 hover:bg-blue-700">
-              <Save className="w-4 h-4 mr-2" />
-              Guardar Cambios
-            </Button>
-          </div>
-        </div>
-
-        {/* Content */}
-        <div className="flex-1 p-6 overflow-auto">
-          {activeTab === "company" && renderCompanyProfile()}
-          {activeTab === "tax" && renderTaxSettings()}
-          {activeTab === "integrations" && renderIntegrations()}
-          {activeTab === "users" && renderUsersPermissions()}
-          {activeTab === "notifications" && renderNotifications()}
-          {activeTab === "backup" && renderBackupExport()}
-        </div>
+      {/* ── Content ── */}
+      <div className="flex-1 overflow-auto p-8">
+        {activeTab === "empresa"        && renderEmpresa()}
+        {activeTab === "integraciones"  && renderIntegraciones()}
+        {activeTab === "usuarios"       && renderUsuarios()}
+        {activeTab === "notificaciones" && renderNotificaciones()}
       </div>
+
+      {/* ── Floating save button ── */}
+      {isDirty && (
+        <div className="fixed bottom-6 right-6 z-50">
+          <button
+            onClick={handleSave}
+            className="bg-blue-600 text-white px-6 py-3 rounded-full shadow-lg hover:bg-blue-700
+                       flex items-center gap-2 transition-all text-sm font-medium"
+          >
+            <Save className="h-4 w-4" />
+            Guardar cambios
+          </button>
+        </div>
+      )}
     </div>
   )
 }

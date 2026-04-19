@@ -25,6 +25,17 @@ from cryptography.fernet import Fernet, InvalidToken
 from ...core.config import get_settings
 
 logger = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
+# IVA rate (%) → Alegra tax id — confirmed against sandbox GET /taxes
+# id=1 IVA Exento (0%, EXEMPT)  id=2 IVA Excluido (0%, EXCLUDED)
+# id=3 IVA 5%                   id=4 IVA 19%
+IVA_RATE_TO_ALEGRA_ID: dict[int, str] = {
+    0:  "1",   # IVA Exento — EXEMPT
+    5:  "3",   # IVA 5%
+    19: "4",   # IVA 19%
+}
+_DEFAULT_TAX_ID = "1"  # Exento — safe fallback when rate is unknown
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +107,8 @@ class AlegraClient:
         final_url = await self._resolve_url(path)
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(final_url, headers=self._headers(), json=body)
+            logger.info(f"ALEGRA response status: {resp.status_code}")
+            logger.info(f"ALEGRA response body: {resp.text}")
             resp.raise_for_status()
             return resp.json()
 
@@ -124,6 +137,12 @@ class AlegraClient:
         """POST /items — create a product in Alegra."""
         return await self._post("/items", item_data)
 
+    async def find_item_by_reference(self, reference: str) -> dict | None:
+        """GET /items?reference=X — busca un ítem por su referencia/código."""
+        data = await self._get("/items", params={"reference": reference})
+        items = data if isinstance(data, list) else []
+        return items[0] if items else None
+
     async def update_item(self, alegra_item_id: str, item_data: dict) -> dict:
         """PUT /items/{id} — update a product in Alegra (Alegra uses PUT, not PATCH)."""
         return await self._put(f"/items/{alegra_item_id}", item_data)
@@ -146,17 +165,62 @@ class AlegraClient:
         data = await self._get("/invoices", params={"limit": limit})
         return data if isinstance(data, list) else []
 
+    async def get_taxes(self) -> list[dict]:
+        """GET /taxes — list of taxes configured in Alegra."""
+        data = await self._get("/taxes")
+        return data if isinstance(data, list) else []
+
+    async def get_or_create_contact(self, nit: str, name: str) -> str:
+        """
+        Busca el proveedor por NIT en Alegra; si no existe lo crea.
+        Retorna el id como string.
+        """
+        # Limpiar NIT: quitar dígito verificador si viene "XXXXXXXXX-X"
+        nit_clean = nit.split("-")[0].strip() if nit else nit
+
+        logger.info(f"Buscando contacto por NIT: {nit_clean}")
+        contacts = await self._get(
+            "/contacts",
+            params={"identification": nit_clean, "type": "provider"},
+        )
+        logger.info(f"Contactos encontrados: {contacts}")
+        if contacts and isinstance(contacts, list) and len(contacts) > 0:
+            return str(contacts[0]["id"])
+
+        new_contact = await self._post("/contacts", {
+            "name": name,
+            "identification": nit_clean,
+            "kindOfPerson": "LEGAL_ENTITY",
+            "identificationObject": {
+                "type": "NIT",
+                "number": nit_clean,
+            },
+            "type": [{"id": "vendor"}],
+            "term": {"id": 1},
+        })
+        return str(new_contact["id"])
+
     async def post_bill(self, bill_data: dict) -> dict:
         """POST /bills — create a purchase bill (cuenta por pagar) in Alegra.
 
-        Minimum payload:
+        Correct payload schema (confirmed with Alegra support):
             {
                 "date": "YYYY-MM-DD",
-                "contact": {"id": <int>},          # proveedor en Alegra
-                "items": [
-                    {"quantity": 12, "price": 5000, "name": "Producto X"}
-                ]
+                "dueDate": "YYYY-MM-DD",           # 30 días después de date
+                "provider": {"id": "2"},            # str, NO "contact"
+                "purchases": {
+                    "items": [
+                        {
+                            "id": "1",             # str
+                            "name": "Producto X",
+                            "price": 10000,
+                            "quantity": 1,
+                            "tax": [{"id": "4"}]   # str
+                        }
+                    ]
+                }
             }
+        Note: numberTemplate is NOT needed for purchase bills.
         """
         return await self._post("/bills", bill_data)
 
@@ -204,6 +268,9 @@ def get_client_from_config(integration_config: dict | None) -> AlegraClient:
         raw_token = decrypt_token(cfg["token_encrypted"])
     except (InvalidToken, KeyError) as exc:
         raise ValueError("Stored Alegra token is invalid or corrupted.") from exc
+
+    token_preview = raw_token[:8] + "..." if raw_token else "NONE"
+    logger.info(f"ALEGRA auth: email={email}, token={token_preview}")
 
     return AlegraClient(email=email, token=raw_token)
 

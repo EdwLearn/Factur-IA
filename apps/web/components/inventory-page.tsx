@@ -65,6 +65,8 @@ type EditFormData = {
   min_stock: string
   max_stock: string
   sale_price: string
+  unit_price: string
+  supplier_name: string
 }
 
 export function InventoryPage() {
@@ -80,10 +82,11 @@ export function InventoryPage() {
   const [supplierFilter, setSupplierFilter] = useState("all")
   const [dateFrom, setDateFrom] = useState("")
   const [dateTo, setDateTo] = useState("")
+  const [filterStockBajo, setFilterStockBajo] = useState(false)
 
   // Edit dialog
   const [editProduct, setEditProduct] = useState<ApiProduct | null>(null)
-  const [editForm, setEditForm] = useState<EditFormData>({ description: "", unit_measure: "", category: "", min_stock: "", max_stock: "", sale_price: "" })
+  const [editForm, setEditForm] = useState<EditFormData>({ description: "", unit_measure: "", category: "", min_stock: "", max_stock: "", sale_price: "", unit_price: "", supplier_name: "" })
   const [editLoading, setEditLoading] = useState(false)
   const [editError, setEditError] = useState<string | null>(null)
 
@@ -166,6 +169,10 @@ export function InventoryPage() {
         product.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
         (product.supplier_name ?? '').toLowerCase().includes(searchTerm.toLowerCase())
 
+      if (filterStockBajo) {
+        return matchesSearch && (product.stock_status === 'low' || product.stock_status === 'out')
+      }
+
       const uiStatus = product.stock_status === 'ok' ? 'normal' : product.stock_status
       const matchesStock = stockFilter === 'all' || uiStatus === stockFilter
       const matchesCategory = categoryFilter === 'all' || product.category === categoryFilter
@@ -184,7 +191,7 @@ export function InventoryPage() {
 
       return matchesSearch && matchesStock && matchesCategory && matchesSupplier && matchesDate
     })
-  }, [products, searchTerm, stockFilter, categoryFilter, supplierFilter, dateFrom, dateTo])
+  }, [products, searchTerm, stockFilter, categoryFilter, supplierFilter, dateFrom, dateTo, filterStockBajo])
 
   const formatCurrency = (amount: number | null | undefined) => {
     if (amount == null) return '—'
@@ -192,6 +199,7 @@ export function InventoryPage() {
       style: "currency",
       currency: "COP",
       minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
     }).format(amount)
   }
 
@@ -238,6 +246,8 @@ export function InventoryPage() {
       min_stock: String(product.min_stock),
       max_stock: product.max_stock != null ? String(product.max_stock) : "",
       sale_price: product.sale_price != null ? String(product.sale_price) : "",
+      unit_price: product.last_purchase_price != null ? String(product.last_purchase_price) : "",
+      supplier_name: product.supplier_name ?? "",
     })
   }
 
@@ -259,6 +269,8 @@ export function InventoryPage() {
       if (editForm.category.trim()) payload.category = editForm.category.trim()
       if (editForm.max_stock.trim()) payload.max_stock = parseFloat(editForm.max_stock)
       if (editForm.sale_price.trim()) payload.sale_price = parseFloat(editForm.sale_price)
+      if (editForm.unit_price.trim()) payload.last_purchase_price = parseFloat(editForm.unit_price)
+      if (editForm.supplier_name.trim()) payload.supplier_name = editForm.supplier_name.trim()
 
       const res = await facturaAPI.updateProduct(editProduct.id, payload)
       if (!(res as any).success) {
@@ -415,7 +427,10 @@ export function InventoryPage() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card
+          className={lowStockCount > 0 ? 'cursor-pointer hover:shadow-md transition-shadow' : ''}
+          onClick={() => { if (lowStockCount > 0) setFilterStockBajo(true) }}
+        >
           <CardContent className="p-6">
             <div className="flex items-center justify-between">
               <div>
@@ -428,7 +443,7 @@ export function InventoryPage() {
             </div>
             <div className="flex items-center mt-2">
               <span className="text-sm text-orange-600">
-                {lowStockCount > 0 ? 'Requiere atención' : 'Todo en orden'}
+                {lowStockCount > 0 ? 'Requiere atención — click para filtrar' : 'Todo en orden'}
               </span>
             </div>
           </CardContent>
@@ -532,7 +547,20 @@ export function InventoryPage() {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center justify-between">
-            <span>Productos ({filteredProducts.length})</span>
+            <span>
+              Productos ({filteredProducts.length})
+              {filterStockBajo && (
+                <span className="ml-2 text-sm font-normal text-orange-600">
+                  — Solo stock bajo / agotado
+                  <button
+                    onClick={() => setFilterStockBajo(false)}
+                    className="text-blue-500 underline ml-2 text-xs"
+                  >
+                    Ver todos
+                  </button>
+                </span>
+              )}
+            </span>
           </CardTitle>
         </CardHeader>
         <CardContent className="p-0">
@@ -704,6 +732,29 @@ export function InventoryPage() {
                     value={editForm.sale_price}
                     onChange={(e) => setEditForm(f => ({ ...f, sale_price: e.target.value }))}
                     placeholder="—"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="edit-unit-price">Precio de compra</Label>
+                  <Input
+                    id="edit-unit-price"
+                    type="number"
+                    min="0"
+                    value={editForm.unit_price}
+                    onChange={(e) => setEditForm(f => ({ ...f, unit_price: e.target.value }))}
+                    placeholder="—"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="edit-supplier-name">Proveedor</Label>
+                  <Input
+                    id="edit-supplier-name"
+                    value={editForm.supplier_name}
+                    onChange={(e) => setEditForm(f => ({ ...f, supplier_name: e.target.value }))}
+                    placeholder="Nombre del proveedor"
                   />
                 </div>
               </div>

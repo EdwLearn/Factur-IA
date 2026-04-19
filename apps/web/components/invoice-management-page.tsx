@@ -123,6 +123,7 @@ export function InvoiceManagementPage({ uploadedInvoices = [], invoiceStatuses =
       style: "currency",
       currency: "COP",
       minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
     }).format(amount)
   }
 
@@ -342,9 +343,13 @@ export function InvoiceManagementPage({ uploadedInvoices = [], invoiceStatuses =
                     <div className="flex items-center justify-between mb-4">
                       <span className="text-sm font-medium text-gray-700">Total</span>
                       <span className="text-lg font-bold text-gray-900">
-                        {invoice.total_amount > 0 
-                        ? formatCurrency(Number(invoice.total_amount)) 
-                        : 'No disponible'}
+                        {invoice.total_amount != null && invoice.total_amount > 0
+                          ? formatCurrency(Number(invoice.total_amount))
+                          : (invoice as any).total != null && (invoice as any).total > 0
+                            ? formatCurrency(Number((invoice as any).total))
+                            : invoice.status === 'completed'
+                              ? 'Sin total'
+                              : 'Calculando...'}
                       </span>
                     </div>
 

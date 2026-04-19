@@ -60,10 +60,13 @@ class ProductUpdate(BaseModel):
     description: Optional[str] = None
     reference: Optional[str] = None
     unit_measure: Optional[str] = None
+    category: Optional[str] = None
+    supplier_name: Optional[str] = None
     current_stock: Optional[float] = None
     min_stock: Optional[float] = None
     max_stock: Optional[float] = None
     sale_price: Optional[float] = None
+    last_purchase_price: Optional[float] = None
 
 
 class ProductResponse(ProductBase):
@@ -517,6 +520,12 @@ async def update_product(
             product.max_stock = Decimal(str(product_update.max_stock))
         if product_update.sale_price is not None:
             product.sale_price = Decimal(str(product_update.sale_price))
+        if product_update.category is not None:
+            product.category = product_update.category
+        if product_update.supplier_name is not None:
+            product.supplier_name = product_update.supplier_name
+        if product_update.last_purchase_price is not None:
+            product.last_purchase_price = Decimal(str(product_update.last_purchase_price))
 
         product.updated_at = datetime.utcnow()
 

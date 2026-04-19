@@ -18,6 +18,8 @@ import uvicorn
 import logging
 from contextlib import asynccontextmanager
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
 from ..core.config import settings
 from ..database.connection import init_database, close_database, create_tables, check_database_health
 from ..services.storage.cleanup_service import StorageCleanupService
@@ -29,14 +31,11 @@ from .routers import invoices, dashboard, inventory, auth, subscriptions, integr
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Intervalo de sincronización con Alegra (segundos). Por defecto 6 horas.
-_ALEGRA_SYNC_INTERVAL = int(os.environ.get("ALEGRA_SYNC_INTERVAL_SECONDS", 6 * 3600))
-
 
 async def run_daily_cleanup() -> None:
     """Background task: elimina archivos S3 expirados una vez cada 24 h."""
     while True:
-        await asyncio.sleep(86400)  # 24 horas
+        await asyncio.sleep(86400)
         try:
             service = StorageCleanupService()
             await service.cleanup_expired_invoices()
@@ -44,23 +43,20 @@ async def run_daily_cleanup() -> None:
             logger.error(f"Daily cleanup failed: {e}")
 
 
-async def run_alegra_sync_job() -> None:
-    """Background task: sincroniza inventario con Alegra cada ALEGRA_SYNC_INTERVAL segundos."""
-    # Primera ejecución tras un minuto de arranque (deja que la BD inicialice)
-    await asyncio.sleep(60)
-    while True:
-        logger.info("🔄 Iniciando sincronización periódica con Alegra...")
-        try:
-            results = await inventory_sync_service.sync_all_tenants()
-            total_items = sum(r.total_synced_items for r in results)
-            total_errors = sum(len(r.errors) for r in results)
-            logger.info(
-                f"✅ Sync Alegra completado: {len(results)} tenant(s), "
-                f"{total_items} ítems, {total_errors} errores"
-            )
-        except Exception as exc:
-            logger.error(f"❌ Sync Alegra job falló: {exc}")
-        await asyncio.sleep(_ALEGRA_SYNC_INTERVAL)
+async def _alegra_sync_job() -> None:
+    """Sincroniza ítems y contactos con Alegra para todos los tenants activos."""
+    logger.info("🔄 Iniciando sincronización periódica con Alegra...")
+    try:
+        results = await inventory_sync_service.sync_all_tenants()
+        total_items = sum(r.total_synced_items for r in results)
+        total_contacts = sum(r.synced_contacts for r in results)
+        total_errors = sum(len(r.errors) for r in results)
+        logger.info(
+            f"✅ Sync Alegra completado: {len(results)} tenant(s), "
+            f"{total_items} ítems, {total_contacts} contactos, {total_errors} errores"
+        )
+    except Exception as exc:
+        logger.error(f"❌ Sync Alegra job falló: {exc}")
 
 
 @asynccontextmanager
@@ -82,14 +78,24 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(run_daily_cleanup())
     logger.info("🗑️  Daily S3 cleanup job scheduled (every 24 h)")
 
-    # Sincronización periódica de inventario con Alegra
-    asyncio.create_task(run_alegra_sync_job())
-    logger.info(f"🔄 Alegra sync job scheduled (every {_ALEGRA_SYNC_INTERVAL // 3600}h)")
+    # Scheduler APScheduler: sync Alegra cada 3 horas
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(
+        _alegra_sync_job,
+        trigger="interval",
+        hours=3,
+        id="alegra_sync",
+        replace_existing=True,
+        misfire_grace_time=300,
+    )
+    scheduler.start()
+    logger.info("🔄 Alegra sync scheduler iniciado (cada 3 h)")
 
     yield
 
     # Shutdown
     logger.info("🛑 Shutting down...")
+    scheduler.shutdown(wait=False)
     await close_database()
 
 # Create FastAPI app
