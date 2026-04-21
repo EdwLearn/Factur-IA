@@ -1,11 +1,10 @@
-[build]
-builder = "dockerfile"
-
 # ── API service ───────────────────────────────────────────────────────────────
-# source = "." so the build context is the project root (needed for alembic/)
 [[services]]
 name = "api"
 source = "."
+
+[services.build]
+builder = "DOCKERFILE"
 dockerfilePath = "apps/api/Dockerfile"
 
 [services.deploy]
@@ -15,10 +14,12 @@ healthcheckTimeout = 30
 restartPolicyType = "on_failure"
 
 # ── Web service ───────────────────────────────────────────────────────────────
-# source = "." so the build context includes packages/ (workspace deps)
 [[services]]
 name = "web"
 source = "."
+
+[services.build]
+builder = "DOCKERFILE"
 dockerfilePath = "apps/web/Dockerfile"
 
 [services.deploy]
