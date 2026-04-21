@@ -287,7 +287,7 @@ class InventorySyncService:
 
     async def _create_alegra_item(self, client: AlegraClient, product: Product) -> Optional[str]:
         """Crea el ítem en Alegra y retorna su ID."""
-        payload = _build_item_payload(product)
+        payload = _build_item_payload(product, is_create=True)
         resp = await client.create_item(payload)
         alegra_id = resp.get("id")
         return str(alegra_id) if alegra_id else None
@@ -318,21 +318,26 @@ class InventorySyncService:
 # Payload builders
 # ------------------------------------------------------------------
 
-def _build_item_payload(product: Product) -> dict:
+def _build_item_payload(product: Product, is_create: bool = False) -> dict:
     """
     Construye el payload para crear/actualizar un ítem en Alegra.
-
-    Nota: NO incluimos el bloque 'inventory' porque Alegra exige 'initialQuantity'
-    al crearlo, y ese valor no debe sobrescribirse en actualizaciones posteriores.
-    El stock en Alegra se actualiza a través de facturas de compra (bills), no aquí.
+    En creación (is_create=True) incluye el bloque inventory requerido por POST /bills.
+    En actualizaciones NO se incluye inventory para no pisar la cantidad real en bodega.
     """
     payload: dict = {
         "name": product.description[:255],
         "reference": product.product_code,
         "type": "product",
-        # Alegra requiere al menos un precio aunque sea 0
         "price": [{"idPriceList": 1, "price": float(product.sale_price) if product.sale_price else 0}],
     }
+
+    if is_create:
+        payload["status"] = "active"
+        payload["inventory"] = {
+            "unit": "unit",
+            "unitCost": float(product.unit_price) if product.unit_price else 0,
+            "warehouses": [{"id": "1", "initialQuantity": 0}],
+        }
 
     return payload
 

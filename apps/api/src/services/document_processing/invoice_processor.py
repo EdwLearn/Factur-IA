@@ -1138,6 +1138,7 @@ class InvoiceProcessorService:
 
                         # ── MAPPING 2: bill items — requiere id de catálogo Alegra ──
                         bill_items = []
+                        bill_categories = []
                         for item in priced_items:
                             iva_rate = item.iva_rate or (invoice_record.iva_rate if invoice_record else None)
                             rate_key = int(float(iva_rate)) if iva_rate is not None else None
@@ -1158,11 +1159,18 @@ class InvoiceProcessorService:
                             # Si no tiene id en Alegra, crear o recuperar por referencia
                             if not alegra_item_id and item.product_code:
                                 sale_price = float(item.sale_price) if item.sale_price else float(item.unit_price)
+                                unit_cost = float(item.unit_price or 0)
                                 try:
                                     new_item = await client.create_item({
                                         "name": (item.description or item.product_code)[:255],
                                         "reference": item.product_code,
                                         "type": "product",
+                                        "status": "active",
+                                        "inventory": {
+                                            "unit": "unit",
+                                            "unitCost": unit_cost,
+                                            "warehouses": [{"id": "1", "initialQuantity": 0}],
+                                        },
                                         "price": [{"idPriceList": 1, "price": sale_price}],
                                     })
                                     alegra_item_id = str(new_item.get("id"))
@@ -1179,7 +1187,16 @@ class InvoiceProcessorService:
                                         logger.warning(f"No se encontró ítem en Alegra para {item.product_code}: {find_exc}")
 
                             if not alegra_item_id:
-                                logger.warning(f"Skipping ítem sin alegra_item_id: {item.product_code}")
+                                # Fallback: registrar como categoría contable (servicios u ítems sin catálogo)
+                                tax_id = IVA_RATE_TO_ALEGRA_ID.get(int(iva_rate or 0), _DEFAULT_TAX_ID)
+                                bill_categories.append({
+                                    "id": "5082",  # Otros gastos generales
+                                    "name": (item.description or item.product_code or "")[:255],
+                                    "price": float(item.unit_price),
+                                    "quantity": float(item.quantity),
+                                    "tax": [{"id": tax_id}],
+                                })
+                                logger.warning(f"Ítem {item.product_code} sin alegra_item_id — registrado como categoría de gastos")
                                 continue
 
                             # Persistir el id para futuros bills
@@ -1200,13 +1217,14 @@ class InvoiceProcessorService:
                             })
 
                         due_date = (date.today() + timedelta(days=30)).isoformat()
+                        purchases: Dict[str, Any] = {"items": bill_items}
+                        if bill_categories:
+                            purchases["categories"] = bill_categories
                         bill_payload: Dict[str, Any] = {
                             "date": bill_date,
                             "dueDate": due_date,
                             "provider": provider_payload,
-                            "purchases": {
-                                "items": bill_items,
-                            },
+                            "purchases": purchases,
                         }
 
                         logger.info(f"ALEGRA POST /bills payload: {json.dumps(bill_payload, default=str, indent=2)}")
