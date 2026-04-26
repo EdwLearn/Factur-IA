@@ -160,10 +160,35 @@ class AlegraClient:
         """PUT /contacts/{id} — update a contact in Alegra (Alegra uses PUT, not PATCH)."""
         return await self._put(f"/contacts/{alegra_contact_id}", contact_data)
 
-    async def get_invoices(self, limit: int = 30) -> list[dict]:
-        """GET /invoices — issued invoices from Alegra."""
-        data = await self._get("/invoices", params={"limit": limit})
+    async def get_invoices(
+        self,
+        date_start: str = None,
+        date_end: str = None,
+        limit: int = 30,
+        start: int = 0,
+    ) -> list[dict]:
+        """GET /invoices — facturas de venta de Alegra.
+
+        date_start / date_end en formato YYYY-MM-DD.
+        """
+        params: dict = {"limit": limit, "start": start}
+        if date_start:
+            params["date-start"] = date_start
+        if date_end:
+            params["date-end"] = date_end
+
+        data = await self._get("/invoices", params=params)
         return data if isinstance(data, list) else []
+
+    async def get_item_stock(self, item_id: str) -> dict:
+        """GET /items/{id} — stock actual de un producto en Alegra."""
+        data = await self._get(f"/items/{item_id}")
+        inventory = data.get("inventory", {}) if isinstance(data, dict) else {}
+        return {
+            "id": item_id,
+            "available_quantity": inventory.get("availableQuantity", 0),
+            "warehouses": inventory.get("warehouses", []),
+        }
 
     async def get_taxes(self) -> list[dict]:
         """GET /taxes — list of taxes configured in Alegra."""

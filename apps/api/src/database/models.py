@@ -293,16 +293,27 @@ class Product(Base):
 class InventoryMovement(Base):
     """Track inventory movements"""
     __tablename__ = "inventory_movements"
-    
+
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False)
-    movement_type = Column(String(50), nullable=False)  # 'purchase', 'sale', 'adjustment'
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=True)
+    movement_type = Column(String(50), nullable=False, default="sale")  # 'purchase', 'sale', 'adjustment'
     quantity = Column(Numeric(15, 4), nullable=False)
     reference_price = Column(Numeric(15, 2))
     movement_date = Column(DateTime, default=datetime.utcnow)
     invoice_id = Column(UUID(as_uuid=True), ForeignKey("processed_invoices.id"))
     notes = Column(Text)
-    
+
+    # Campos para rotación de inventario (migración 0011)
+    tenant_id = Column(String(255), nullable=True, index=True)
+    product_code = Column(String(100), nullable=True)
+    description = Column(Text, nullable=True)
+    tipo = Column(String(20), nullable=True)        # "entrada" | "salida"
+    origen = Column(String(50), nullable=True)      # "factura_compra" | "factura_venta_alegra" | "manual"
+    origen_id = Column(String(100), nullable=True)
+    unit_price = Column(Numeric(15, 2), nullable=True)
+    fecha = Column(Date, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
     # Relationships
     product = relationship("Product")
     invoice = relationship("ProcessedInvoice")

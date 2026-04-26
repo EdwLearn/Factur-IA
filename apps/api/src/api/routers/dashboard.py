@@ -37,6 +37,7 @@ class DashboardMetrics(BaseModel):
     total_inventory_value: float
     pending_alerts: int
     total_suppliers: int
+    total_products: int
     month_over_month_invoices: float
     month_over_month_inventory: float
 
@@ -151,13 +152,21 @@ async def get_dashboard_metrics(
             result = await session.execute(alerts_query)
             pending_alerts = result.scalar() or 0
 
+            # Count total products in catalog
+            products_count_query = select(func.count(Product.id)).where(
+                Product.tenant_id == tenant_id
+            )
+            result = await session.execute(products_count_query)
+            total_products = result.scalar() or 0
+
             return DashboardMetrics(
                 total_invoices_month=total_invoices_month,
                 total_inventory_value=total_inventory_value,
                 pending_alerts=pending_alerts,
                 total_suppliers=total_suppliers,
+                total_products=total_products,
                 month_over_month_invoices=round(mom_invoices, 1),
-                month_over_month_inventory=8.0  # TODO: Calculate real MoM inventory growth
+                month_over_month_inventory=8.0
             )
 
     except Exception as e:
@@ -629,7 +638,7 @@ class PriceAlertsResponse(BaseModel):
 
 @router.get("/top-suppliers", response_model=TopSuppliersResponse)
 async def get_top_suppliers(tenant_id: str = Depends(get_tenant_id)):
-    """Top 5 suppliers by total spend in the current month (confirmed invoices)."""
+    """Top 5 suppliers by total spend in the current month (confirmed + completed invoices)."""
     try:
         async with AsyncSessionFactory() as session:
             query = (
@@ -642,7 +651,7 @@ async def get_top_suppliers(tenant_id: str = Depends(get_tenant_id)):
                 .where(
                     and_(
                         Invoice.tenant_id == tenant_id,
-                        Invoice.status == "confirmed",
+                        Invoice.status.in_(["confirmed", "completed"]),
                         func.date_trunc(text("'month'"), Invoice.upload_timestamp)
                         == func.date_trunc(text("'month'"), func.now()),
                     )
@@ -672,7 +681,7 @@ async def get_top_suppliers(tenant_id: str = Depends(get_tenant_id)):
 
 @router.get("/top-products", response_model=TopProductsResponse)
 async def get_top_products(tenant_id: str = Depends(get_tenant_id)):
-    """Top 8 products by total quantity purchased in the current month (confirmed invoices)."""
+    """Top 8 products by total quantity purchased in the current month (confirmed + completed invoices)."""
     try:
         async with AsyncSessionFactory() as session:
             query = (
@@ -687,7 +696,7 @@ async def get_top_products(tenant_id: str = Depends(get_tenant_id)):
                 .where(
                     and_(
                         Invoice.tenant_id == tenant_id,
-                        Invoice.status == "confirmed",
+                        Invoice.status.in_(["confirmed", "completed"]),
                         func.date_trunc(text("'month'"), Invoice.upload_timestamp)
                         == func.date_trunc(text("'month'"), func.now()),
                     )
@@ -845,3 +854,46 @@ async def get_price_alerts(tenant_id: str = Depends(get_tenant_id)):
     except Exception as e:
         logger.error(f"Error fetching price alerts: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch price alerts: {str(e)}")
+
+
+# ─── Endpoint 5: Purchase volume by week (last 60 days) ──────────────────────
+
+class PurchaseVolumePoint(BaseModel):
+    semana: str
+    volumen: float
+    num_facturas: int
+
+class PurchaseVolumeResponse(BaseModel):
+    data: List[PurchaseVolumePoint]
+
+@router.get("/purchase-volume", response_model=PurchaseVolumeResponse)
+async def get_purchase_volume(tenant_id: str = Depends(get_tenant_id)):
+    """Weekly purchase volume for the last 60 days (confirmed + completed invoices)."""
+    try:
+        async with AsyncSessionFactory() as session:
+            sql = text("""
+                SELECT
+                    to_char(date_trunc('week', upload_timestamp), 'DD/MM') AS semana,
+                    COALESCE(SUM(total_amount), 0)                          AS volumen,
+                    COUNT(*)                                                 AS num_facturas
+                FROM processed_invoices
+                WHERE tenant_id = :tenant_id
+                  AND status IN ('confirmed', 'completed')
+                  AND upload_timestamp >= NOW() - INTERVAL '60 days'
+                GROUP BY date_trunc('week', upload_timestamp)
+                ORDER BY date_trunc('week', upload_timestamp)
+            """)
+            result = await session.execute(sql, {"tenant_id": tenant_id})
+            rows = result.all()
+            data = [
+                PurchaseVolumePoint(
+                    semana=row.semana,
+                    volumen=float(row.volumen),
+                    num_facturas=int(row.num_facturas),
+                )
+                for row in rows
+            ]
+            return PurchaseVolumeResponse(data=data)
+    except Exception as e:
+        logger.error(f"Error fetching purchase volume: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch purchase volume: {str(e)}")

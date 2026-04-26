@@ -177,7 +177,9 @@ async def list_invoices(
 
         since: Optional[datetime] = None
         if historial_dias is not None:
-            since = datetime.now(tz=timezone.utc) - timedelta(days=historial_dias)
+            # upload_timestamp es TIMESTAMP WITHOUT TIMEZONE almacenado en UTC.
+            # Usar utcnow() naive para evitar el error de comparación tz-aware vs naive.
+            since = datetime.utcnow() - timedelta(days=historial_dias)
 
         invoices = await invoice_service.list_tenant_invoices(
             tenant_id=tenant_id,

@@ -20,6 +20,7 @@ import uuid
 
 from ...database.connection import AsyncSessionFactory
 from ...database.models import Product, InventoryMovement, DefectiveProduct, ProcessedInvoice
+from ...services.sales_sync_service import SalesSyncService
 from ..deps import get_tenant_id
 
 logger = logging.getLogger(__name__)
@@ -1054,3 +1055,157 @@ async def get_inventory_stats(
     except Exception as e:
         logger.error(f"Error getting inventory stats: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error getting inventory stats: {str(e)}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Rotación de inventario
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SyncSalesRequest(BaseModel):
+    date_start: Optional[str] = Field(
+        None,
+        description="Fecha inicio YYYY-MM-DD (default: hoy - 30 días)"
+    )
+
+
+class SyncSalesResponse(BaseModel):
+    synced: int
+    errors: int
+    date_start: str
+    error: Optional[str] = None
+
+
+class RotationItem(BaseModel):
+    product_id: Optional[str]
+    description: str
+    unidades_vendidas: float
+    valor_vendido: float
+    stock_actual: float
+    rotacion: float
+    dias_stock: float
+
+
+class MovimientoItem(BaseModel):
+    id: str
+    tenant_id: Optional[str]
+    product_id: Optional[str]
+    product_code: Optional[str]
+    description: Optional[str]
+    quantity: float
+    tipo: Optional[str]
+    origen: Optional[str]
+    origen_id: Optional[str]
+    unit_price: Optional[float]
+    fecha: Optional[date]
+    created_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
+@router.post(
+    "/sync-sales",
+    response_model=SyncSalesResponse,
+    summary="🔄 Sincronizar ventas desde Alegra",
+    description="Importa facturas de venta de Alegra como salidas de inventario",
+)
+async def sync_sales(
+    body: SyncSalesRequest = SyncSalesRequest(),
+    x_tenant_id: str = Depends(get_tenant_id),
+):
+    """
+    Dispara sincronización manual de ventas desde Alegra.
+
+    Registra cada línea de factura de venta como un movimiento de salida
+    en inventory_movements (tipo='salida', origen='factura_venta_alegra').
+    El proceso es idempotente — no duplica movimientos ya sincronizados.
+    """
+    try:
+        service = SalesSyncService()
+        result = await service.sync_sales_from_alegra(
+            tenant_id=x_tenant_id,
+            date_start=body.date_start,
+        )
+        return SyncSalesResponse(**result)
+    except Exception as e:
+        logger.error(f"Error en sync-sales para tenant {x_tenant_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
+    "/rotation",
+    response_model=List[RotationItem],
+    summary="📈 Rotación de inventario",
+    description="Calcula rotación por producto basada en ventas de Alegra",
+)
+async def get_rotation(
+    days: int = Query(default=30, ge=1, le=365, description="Período en días"),
+    x_tenant_id: str = Depends(get_tenant_id),
+):
+    """
+    Retorna la rotación de inventario por producto para el período indicado.
+
+    - **rotacion** = unidades_vendidas / stock_actual
+    - **dias_stock** = días estimados hasta agotar el stock al ritmo actual
+    """
+    try:
+        service = SalesSyncService()
+        resultado = await service.calculate_rotation(
+            tenant_id=x_tenant_id,
+            days=days,
+        )
+        return resultado
+    except Exception as e:
+        logger.error(f"Error en rotation para tenant {x_tenant_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
+    "/movements/sales",
+    response_model=List[MovimientoItem],
+    summary="📋 Movimientos de inventario (ventas y entradas)",
+    description="Lista movimientos con filtros por tipo y período",
+)
+async def list_movements_extended(
+    tipo: Optional[str] = Query(None, description="Filtrar: 'entrada' | 'salida'"),
+    days: int = Query(default=30, ge=1, le=365, description="Período en días"),
+    limit: int = Query(default=100, le=500),
+    x_tenant_id: str = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Lista movimientos de inventario del tenant con los campos extendidos
+    de rotación (tipo, origen, origen_id, unit_price, fecha).
+    """
+    try:
+        query = select(InventoryMovement).where(
+            InventoryMovement.tenant_id == x_tenant_id,
+            InventoryMovement.fecha >= func.current_date() - days,
+        )
+        if tipo:
+            query = query.where(InventoryMovement.tipo == tipo)
+
+        query = query.order_by(desc(InventoryMovement.fecha)).limit(limit)
+        result = await db.execute(query)
+        rows = result.scalars().all()
+
+        return [
+            MovimientoItem(
+                id=str(r.id),
+                tenant_id=r.tenant_id,
+                product_id=str(r.product_id) if r.product_id else None,
+                product_code=r.product_code,
+                description=r.description,
+                quantity=float(r.quantity),
+                tipo=r.tipo,
+                origen=r.origen,
+                origen_id=r.origen_id,
+                unit_price=float(r.unit_price) if r.unit_price else None,
+                fecha=r.fecha,
+                created_at=r.created_at,
+            )
+            for r in rows
+        ]
+    except Exception as e:
+        logger.error(f"Error listando movimientos extendidos: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

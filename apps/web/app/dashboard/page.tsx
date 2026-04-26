@@ -39,7 +39,6 @@ import {
   type PricingInfo,
   type DashboardMetrics,
   type RecentInvoice as RecentInvoiceAPI,
-  type AnalyticsData
 } from "@/lib/api"
 import { isAuthenticated, getStoredTenantId, logout } from "@/src/lib/api/endpoints/auth"
 import { PlanBadge } from "@/components/plan-badge"
@@ -50,6 +49,7 @@ import {
   TopProductsChart,
   PriceEvolutionChart,
   PriceAlertsChart,
+  SalesRotationChart,
 } from "@/components/dashboard-charts"
 import {
   type TopSuppliersResponse,
@@ -63,8 +63,6 @@ import { SupplierManagementPage } from "@/components/supplier-management-page"
 import { ReportsAnalyticsPage } from "@/components/reports-analytics-page"
 import { ConfigurationPage } from "@/components/configuration-page"
 import { RecommendationsPage } from "@/components/recommendations-page"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { LineChart, Line, BarChart, Bar, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Cell } from "recharts"
 
 export default function FacturIADashboard() {
   const router = useRouter()
@@ -104,9 +102,7 @@ export default function FacturIADashboard() {
   // Dashboard data states
   const [dashboardMetrics, setDashboardMetrics] = useState<DashboardMetrics | null>(null)
   const [recentInvoicesData, setRecentInvoicesData] = useState<RecentInvoiceAPI[]>([])
-  const [analyticsData, setAnalyticsData] = useState<AnalyticsData | null>(null)
   const [isDashboardLoading, setIsDashboardLoading] = useState(false)
-  const [timePeriod, setTimePeriod] = useState<"day" | "week" | "month">("week")
 
   // Extra dashboard data
   const [topSuppliersData, setTopSuppliersData] = useState<Array<{name: string; invoices: number; volume: number}>>([])
@@ -147,7 +143,7 @@ export default function FacturIADashboard() {
     if (activeTab === "Dashboard") {
       loadDashboardData()
     }
-  }, [activeTab, timePeriod])
+  }, [activeTab])
 
   const loadDashboardData = async () => {
     setIsDashboardLoading(true)
@@ -156,11 +152,10 @@ export default function FacturIADashboard() {
       facturaAPI.setTenantId(tenantId)
 
       // Load all dashboard data in parallel
-      const [metrics, recentInvs, analytics, suppliersRes, productsRes, alertsRes] =
+      const [metrics, recentInvs, suppliersRes, productsRes, alertsRes] =
         await Promise.all([
           facturaAPI.getDashboardMetrics(),
           facturaAPI.getRecentInvoices(10),
-          facturaAPI.getDashboardAnalytics(),
           facturaAPI.getTopSuppliers().catch(() => null),
           facturaAPI.getTopProducts().catch(() => null),
           facturaAPI.getPriceAlerts().catch(() => null),
@@ -168,7 +163,6 @@ export default function FacturIADashboard() {
 
       setDashboardMetrics(metrics)
       setRecentInvoicesData(recentInvs)
-      setAnalyticsData(analytics)
       setTopSuppliers(suppliersRes ?? { suppliers: [] })
       setTopProducts(productsRes ?? { products: [] })
       setPriceAlerts(alertsRes ?? { alerts: [] })
@@ -178,12 +172,6 @@ export default function FacturIADashboard() {
     } finally {
       setIsDashboardLoading(false)
     }
-  }
-
-  const sliceByPeriod = <T,>(arr: T[]): T[] => {
-    if (!arr?.length) return arr ?? []
-    const n = { day: 1, week: 7, month: arr.length }[timePeriod]
-    return arr.slice(-n)
   }
 
   const validateFile = (file: File): boolean => {
@@ -1133,248 +1121,6 @@ export default function FacturIADashboard() {
                 )}
               </div>
 
-              {/* Timeline Dashboard */}
-              <div className="mt-8">
-                <div className="flex items-center justify-between mb-6">
-                  <h3 className="text-xl font-semibold text-gray-900">Panel de Análisis Temporal</h3>
-                  <Select value={timePeriod} onValueChange={(v) => setTimePeriod(v as "day" | "week" | "month")}>
-                    <SelectTrigger className="w-32">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="day">Día</SelectItem>
-                      <SelectItem value="week">Semana</SelectItem>
-                      <SelectItem value="month">Mes</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                  {/* Purchase Volume Chart */}
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="flex items-center gap-2">
-                        <BarChart3 className="w-5 h-5" />
-                        Volumen de Compras
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="h-64">
-                        <ResponsiveContainer width="100%" height="100%">
-                          <LineChart data={sliceByPeriod(analyticsData?.purchase_volume ?? [])}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                            <XAxis dataKey="period" tick={{ fontSize: 12 }} />
-                            <YAxis tick={{ fontSize: 12 }} />
-                            <Tooltip
-                              formatter={(value) => [`$${Number(value).toLocaleString()}`, "Volumen"]}
-                              labelFormatter={(label) => `Período: ${label}`}
-                            />
-                            <Line
-                              type="monotone"
-                              dataKey="volume"
-                              stroke="#4F63FF"
-                              strokeWidth={3}
-                              dot={{ fill: "#4F63FF", strokeWidth: 2, r: 4 }}
-                              activeDot={{ r: 6, stroke: "#4F63FF", strokeWidth: 2 }}
-                            />
-                          </LineChart>
-                        </ResponsiveContainer>
-                      </div>
-                      <div className="flex items-center mt-4">
-                        <TrendingUp className="w-4 h-4 text-green-500 mr-1" />
-                        <span className="text-sm text-green-600">+18% vs período anterior</span>
-                      </div>
-                    </CardContent>
-                  </Card>
-
-                  {/* Margin Trend */}
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="flex items-center gap-2">
-                        <TrendingUp className="w-5 h-5" />
-                        Tendencia de Margen
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="h-64">
-                        <ResponsiveContainer width="100%" height="100%">
-                          <LineChart data={sliceByPeriod(analyticsData?.margin_trend ?? [])}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                            <XAxis dataKey="month" tick={{ fontSize: 12 }} />
-                            <YAxis
-                              tick={{ fontSize: 12 }}
-                              domain={["dataMin - 2", "dataMax + 2"]}
-                              tickFormatter={(value) => `${value}%`}
-                            />
-                            <Tooltip
-                              formatter={(value) => [`${value}%`, "Margen"]}
-                              labelFormatter={(label) => `Mes: ${label}`}
-                            />
-                            <Line
-                              type="monotone"
-                              dataKey="margin"
-                              stroke="#10B981"
-                              strokeWidth={3}
-                              dot={{ fill: "#10B981", strokeWidth: 2, r: 5 }}
-                              activeDot={{ r: 7, stroke: "#10B981", strokeWidth: 2 }}
-                            />
-                          </LineChart>
-                        </ResponsiveContainer>
-                      </div>
-                      <div className="flex items-center mt-4">
-                        <TrendingUp className="w-4 h-4 text-green-500 mr-1" />
-                        <span className="text-sm text-green-600">Margen promedio: 42.8%</span>
-                      </div>
-                    </CardContent>
-                  </Card>
-
-                  {/* Previous Period Comparison */}
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="flex items-center gap-2">
-                        <BarChart3 className="w-5 h-5" />
-                        Este Mes vs. Anterior
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="space-y-4">
-                        <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                          <div>
-                            <p className="text-sm text-gray-600">Facturas Procesadas</p>
-                            <p className="text-2xl font-bold text-gray-900">
-                              {analyticsData?.comparison_metrics?.invoices_processed || 0}
-                            </p>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            {(analyticsData?.comparison_metrics?.invoices_change || 0) >= 0 ? (
-                              <TrendingUp className="w-4 h-4 text-green-500" />
-                            ) : (
-                              <svg className="w-4 h-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
-                              </svg>
-                            )}
-                            <span className={`text-sm font-medium ${(analyticsData?.comparison_metrics?.invoices_change || 0) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                              {(analyticsData?.comparison_metrics?.invoices_change || 0) >= 0 ? '+' : ''}
-                              {analyticsData?.comparison_metrics?.invoices_change || 0}%
-                            </span>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                          <div>
-                            <p className="text-sm text-gray-600">Ingresos Totales</p>
-                            <p className="text-2xl font-bold text-gray-900">
-                              ${analyticsData?.comparison_metrics?.total_revenue?.toLocaleString() || 0}
-                            </p>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            {(analyticsData?.comparison_metrics?.revenue_change || 0) >= 0 ? (
-                              <TrendingUp className="w-4 h-4 text-green-500" />
-                            ) : (
-                              <svg className="w-4 h-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
-                              </svg>
-                            )}
-                            <span className={`text-sm font-medium ${(analyticsData?.comparison_metrics?.revenue_change || 0) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                              {(analyticsData?.comparison_metrics?.revenue_change || 0) >= 0 ? '+' : ''}
-                              {analyticsData?.comparison_metrics?.revenue_change || 0}%
-                            </span>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                          <div>
-                            <p className="text-sm text-gray-600">Productos Nuevos</p>
-                            <p className="text-2xl font-bold text-gray-900">
-                              {analyticsData?.comparison_metrics?.new_products || 0}
-                            </p>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            {(analyticsData?.comparison_metrics?.products_change || 0) >= 0 ? (
-                              <TrendingUp className="w-4 h-4 text-green-500" />
-                            ) : (
-                              <svg className="w-4 h-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
-                              </svg>
-                            )}
-                            <span className={`text-sm font-medium ${(analyticsData?.comparison_metrics?.products_change || 0) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                              {(analyticsData?.comparison_metrics?.products_change || 0) >= 0 ? '+' : ''}
-                              {analyticsData?.comparison_metrics?.products_change || 0}%
-                            </span>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                          <div>
-                            <p className="text-sm text-gray-600">Tiempo Promedio</p>
-                            <p className="text-2xl font-bold text-gray-900">
-                              {analyticsData?.comparison_metrics?.avg_processing_time_minutes || 0} min
-                            </p>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            {(analyticsData?.comparison_metrics?.time_change || 0) >= 0 ? (
-                              <svg className="w-4 h-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
-                              </svg>
-                            ) : (
-                              <TrendingUp className="w-4 h-4 text-green-500" />
-                            )}
-                            <span className={`text-sm font-medium ${(analyticsData?.comparison_metrics?.time_change || 0) >= 0 ? 'text-red-600' : 'text-green-600'}`}>
-                              {analyticsData?.comparison_metrics?.time_change || 0}%
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-
-                  {/* Inventory Projection */}
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="flex items-center gap-2">
-                        <Package className="w-5 h-5" />
-                        Proyección de Inventario
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="h-64">
-                        <ResponsiveContainer width="100%" height="100%">
-                          <BarChart data={sliceByPeriod(analyticsData?.inventory_projection ?? [])}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                            <XAxis dataKey="product" tick={{ fontSize: 10 }} angle={-45} textAnchor="end" height={80} />
-                            <YAxis tick={{ fontSize: 12 }} />
-                            <Tooltip
-                              formatter={(value, name) => [
-                                `${value} unidades`,
-                                name === "current" ? "Stock Actual" : "Proyección 30 días",
-                              ]}
-                            />
-                            <Bar dataKey="current" fill="#4F63FF" name="current" />
-                            <Bar dataKey="projected" fill="#10B981" name="projected" />
-                          </BarChart>
-                        </ResponsiveContainer>
-                      </div>
-                      <div className="flex items-center justify-between mt-4">
-                        <div className="flex items-center gap-4">
-                          <div className="flex items-center gap-2">
-                            <div className="w-3 h-3 bg-blue-600 rounded-full"></div>
-                            <span className="text-sm text-gray-600">Stock Actual</span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <div className="w-3 h-3 bg-green-600 rounded-full"></div>
-                            <span className="text-sm text-gray-600">Proyección 30 días</span>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <AlertTriangle className="w-4 h-4 text-orange-500" />
-                          <span className="text-sm text-orange-600">3 productos en riesgo</span>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </div>
-              </div>
-
               {/* ── New charts section ── */}
               <div className="mt-8">
                 <h3 className="text-xl font-semibold text-gray-900 mb-6">
@@ -1385,6 +1131,7 @@ export default function FacturIADashboard() {
                   <TopProductsChart data={topProducts} />
                   <PriceEvolutionChart />
                   <PriceAlertsChart data={priceAlerts} />
+                  <SalesRotationChart />
                 </div>
               </div>
             </>

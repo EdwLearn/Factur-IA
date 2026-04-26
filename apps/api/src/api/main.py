@@ -19,11 +19,14 @@ import logging
 from contextlib import asynccontextmanager
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from sqlalchemy import select
 
 from ..core.config import settings
 from ..database.connection import init_database, close_database, create_tables, check_database_health
 from ..services.storage.cleanup_service import StorageCleanupService
 from ..services.integrations.inventory_sync_service import inventory_sync_service
+from ..services.sales_sync_service import SalesSyncService
+from ..database.models import AlegraConnection
 from .routers import invoices, dashboard, inventory, auth, subscriptions, integrations, suppliers, recommendations
 
 
@@ -41,6 +44,36 @@ async def run_daily_cleanup() -> None:
             await service.cleanup_expired_invoices()
         except Exception as e:
             logger.error(f"Daily cleanup failed: {e}")
+
+
+async def _sales_sync_job() -> None:
+    """Sincroniza ventas de Alegra → inventory_movements cada 6 horas."""
+    logger.info("🛒 Iniciando sincronización de ventas desde Alegra...")
+    try:
+        from ..database.connection import AsyncSessionFactory
+        async with AsyncSessionFactory() as session:
+            result = await session.execute(
+                select(AlegraConnection).where(AlegraConnection.is_active == True)
+            )
+            connections = result.scalars().all()
+
+        service = SalesSyncService()
+        for conn in connections:
+            try:
+                summary = await service.sync_sales_from_alegra(
+                    tenant_id=conn.tenant_id,
+                    date_start=None,
+                )
+                logger.info(
+                    f"  tenant={conn.tenant_id} synced={summary['synced']} "
+                    f"errors={summary['errors']}"
+                )
+            except Exception as exc:
+                logger.error(f"  tenant={conn.tenant_id} falló: {exc}")
+
+        logger.info(f"✅ Sales sync completado para {len(connections)} tenant(s)")
+    except Exception as exc:
+        logger.error(f"❌ Sales sync job falló: {exc}")
 
 
 async def _alegra_sync_job() -> None:
@@ -88,8 +121,16 @@ async def lifespan(app: FastAPI):
         replace_existing=True,
         misfire_grace_time=300,
     )
+    scheduler.add_job(
+        _sales_sync_job,
+        trigger="interval",
+        hours=6,
+        id="sales_sync",
+        replace_existing=True,
+        misfire_grace_time=300,
+    )
     scheduler.start()
-    logger.info("🔄 Alegra sync scheduler iniciado (cada 3 h)")
+    logger.info("🔄 Alegra sync scheduler iniciado (ítems cada 3 h, ventas cada 6 h)")
 
     yield
 
@@ -160,14 +201,16 @@ Todos los endpoints requieren el header `x-tenant-id` para identificar la empres
 )
 
 
+ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://localhost:3001",
+    *(o for o in [os.getenv("FRONTEND_URL", "")] if o),
+]
+
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",                    # desarrollo local
-        "http://localhost:3001",                    # desarrollo alternativo
-        os.getenv("FRONTEND_URL", ""),             # producción (Railway)
-    ],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=[
@@ -241,22 +284,33 @@ async def health_check():
         }
     }
 
+def _cors_headers(request) -> dict:
+    """Return CORS headers for the request's origin, if allowed."""
+    origin = request.headers.get("origin", "")
+    if origin in ALLOWED_ORIGINS:
+        return {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+        }
+    return {}
+
+
 # Exception handlers
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc):
-    """Handle HTTP exceptions"""
     return JSONResponse(
         status_code=exc.status_code,
-        content={"error": exc.detail, "status_code": exc.status_code}
+        content={"error": exc.detail, "status_code": exc.status_code},
+        headers=_cors_headers(request),
     )
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request, exc):
-    """Handle general exceptions"""
     logger.error(f"Unhandled exception: {str(exc)}")
     return JSONResponse(
         status_code=500,
-        content={"error": "Internal server error", "status_code": 500}
+        content={"error": "Internal server error", "status_code": 500},
+        headers=_cors_headers(request),
     )
     
 
