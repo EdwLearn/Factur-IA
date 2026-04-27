@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react"
 import { apiClient } from "@/src/lib/api/client"
+import { getUsage, PLAN_LABELS, type UsageInfo } from "@/src/lib/api/endpoints/subscriptions"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -84,17 +85,13 @@ export function ConfigurationPage() {
 
   // ── Company form ──
   const [company, setCompany] = useState<CompanyForm>({
-    name:    "Almacén Medellín JA",
-    nit:     "900123456-1",
-    phone:   "+57 4 123-4567",
-    email:   "contacto@almacenmedellinja.com",
-    address: "Carrera 70 #45-23, El Poblado, Medellín",
+    name: "", nit: "", phone: "", email: "", address: "",
   })
   const [logoPreview, setLogoPreview] = useState<string | null>(null)
   const logoInputRef = useRef<HTMLInputElement>(null)
 
-  // ── Plan (static for now) ──
-  const plan = { name: "Premium", type: "pro" as "freemium" | "basic" | "pro", used: 85, limit: 200, daysToReset: 14 }
+  // ── Plan ──
+  const [usage, setUsage] = useState<UsageInfo | null>(null)
 
   // ── Alegra ──
   const [alegraConnected,   setAlegraConnected]   = useState(false)
@@ -127,6 +124,29 @@ export function ConfigurationPage() {
   })
 
   // ─── Load Alegra status ────────────────────────────────────────────────────
+
+  const loadProfile = useCallback(async () => {
+    try {
+      const res = await apiClient.get("/auth/me")
+      if (res.success && res.data) {
+        const d = res.data as any
+        setCompany({
+          name:    d.company_name ?? "",
+          nit:     d.nit         ?? "",
+          phone:   d.phone       ?? "",
+          email:   d.email       ?? "",
+          address: "",
+        })
+      }
+    } catch { /* silencioso */ }
+  }, [])
+
+  const loadUsage = useCallback(async () => {
+    try {
+      const data = await getUsage()
+      setUsage(data)
+    } catch { /* silencioso */ }
+  }, [])
 
   const loadAlegraStatus = useCallback(async () => {
     try {
@@ -161,9 +181,11 @@ export function ConfigurationPage() {
   }, [])
 
   useEffect(() => {
+    loadProfile()
+    loadUsage()
     loadAlegraStatus()
     loadUsers()
-  }, [loadAlegraStatus, loadUsers])
+  }, [loadProfile, loadUsage, loadAlegraStatus, loadUsers])
 
   // ─── Handlers ─────────────────────────────────────────────────────────────
 
@@ -183,9 +205,29 @@ export function ConfigurationPage() {
     markDirty()
   }
 
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
+
   async function handleSave() {
-    // TODO: persist to API
-    setIsDirty(false)
+    setSaving(true)
+    setSaveError(null)
+    try {
+      const res = await apiClient.request("/auth/me", {
+        method: "PATCH",
+        body: JSON.stringify({
+          company_name: company.name   || undefined,
+          nit:          company.nit    || undefined,
+          email:        company.email  || undefined,
+          phone:        company.phone  || undefined,
+        }),
+      })
+      if (!res.success) throw new Error(res.error?.message ?? "Error al guardar")
+      setIsDirty(false)
+    } catch (err: any) {
+      setSaveError(err.message ?? "Error al guardar")
+    } finally {
+      setSaving(false)
+    }
   }
 
   async function handleAlegraSync() {
@@ -266,13 +308,19 @@ export function ConfigurationPage() {
 
   // ─── Helpers ──────────────────────────────────────────────────────────────
 
-  const planColor: Record<typeof plan.type, string> = {
+  const planType   = usage?.plan ?? "freemium"
+  const planName   = PLAN_LABELS[planType] ?? planType
+  const planUsed   = usage?.invoice_count ?? 0
+  const planLimit  = usage?.invoice_limit   // null = ilimitado
+  const planDays   = usage?.days_until_reset ?? 30
+
+  const planColor: Record<string, string> = {
     freemium: "bg-gray-100 text-gray-700",
     basic:    "bg-blue-100 text-blue-700",
     pro:      "bg-purple-100 text-purple-700",
   }
 
-  const progressPct = Math.round((plan.used / plan.limit) * 100)
+  const progressPct = planLimit ? Math.min(100, Math.round((planUsed / planLimit) * 100)) : 0
   const progressColor =
     progressPct > 90 ? "bg-red-500"
     : progressPct > 70 ? "bg-yellow-400"
@@ -370,14 +418,20 @@ export function ConfigurationPage() {
           </div>
         </div>
 
-        {isDirty && (
-          <div className="pt-2">
+        {(isDirty || saveError) && (
+          <div className="pt-2 space-y-2">
+            {saveError && (
+              <p className="text-xs text-red-600">{saveError}</p>
+            )}
             <button
               onClick={handleSave}
-              className="bg-blue-600 hover:bg-blue-700 text-white text-sm px-4 py-2 rounded-lg flex items-center gap-2 transition-colors"
+              disabled={saving}
+              className="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-sm px-4 py-2 rounded-lg flex items-center gap-2 transition-colors"
             >
-              <Save className="w-4 h-4" />
-              Guardar cambios
+              {saving
+                ? <><Loader2 className="w-4 h-4 animate-spin" />Guardando...</>
+                : <><Save className="w-4 h-4" />Guardar cambios</>
+              }
             </button>
           </div>
         )}
@@ -394,8 +448,8 @@ export function ConfigurationPage() {
             <Crown className="w-5 h-5 text-purple-600" />
           </div>
           <div>
-            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${planColor[plan.type]}`}>
-              {plan.name}
+            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${planColor[planType] ?? planColor.freemium}`}>
+              {planName}
             </span>
           </div>
         </div>
@@ -404,7 +458,7 @@ export function ConfigurationPage() {
         <div className="space-y-2">
           <div className="flex justify-between text-sm">
             <span className="text-gray-600">Facturas este mes</span>
-            <span className="font-medium text-gray-900">{plan.used} / {plan.limit}</span>
+            <span className="font-medium text-gray-900">{planUsed} / {planLimit ?? "∞"}</span>
           </div>
           <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
             <div
@@ -422,7 +476,7 @@ export function ConfigurationPage() {
 
         <div className="flex items-center gap-2 text-sm text-gray-500">
           <Clock className="w-4 h-4" />
-          <span>Se reinicia en <strong className="text-gray-700">{plan.daysToReset} días</strong></span>
+          <span>Se reinicia en <strong className="text-gray-700">{planDays} días</strong></span>
         </div>
 
         <Separator />
@@ -648,24 +702,6 @@ export function ConfigurationPage() {
                 </span>
               </div>
               <p className="text-xs text-gray-500 mt-0.5">Extracción de texto por OCR</p>
-            </div>
-          </div>
-        </div>
-
-        {/* Siigo — coming soon */}
-        <div className="bg-white rounded-xl border border-gray-200 p-5 opacity-70">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-gray-100 rounded-lg flex items-center justify-center">
-              <Plug className="w-5 h-5 text-gray-400" />
-            </div>
-            <div className="flex-1">
-              <div className="flex items-center justify-between">
-                <h4 className="text-sm font-semibold text-gray-700">Siigo</h4>
-                <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">
-                  Pronto
-                </span>
-              </div>
-              <p className="text-xs text-gray-400 mt-0.5">Software contable colombiano</p>
             </div>
           </div>
         </div>

@@ -112,6 +112,12 @@ class Settings(BaseSettings):
         description="Fernet key for encrypting Alegra API tokens at rest. Generate with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
     )
 
+    # Admin
+    admin_secret_key: str = Field(
+        default="change-me-admin-key",
+        description="Admin API key for protected endpoints (X-Admin-Key header)"
+    )
+
     # Wompi integration
     wompi_webhook_secret: str = Field(default="", description="Wompi webhook HMAC secret")
 

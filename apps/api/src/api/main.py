@@ -27,7 +27,7 @@ from ..services.storage.cleanup_service import StorageCleanupService
 from ..services.integrations.inventory_sync_service import inventory_sync_service
 from ..services.sales_sync_service import SalesSyncService
 from ..database.models import AlegraConnection
-from .routers import invoices, dashboard, inventory, auth, subscriptions, integrations, suppliers, recommendations
+from .routers import invoices, dashboard, inventory, auth, subscriptions, integrations, suppliers, recommendations, admin
 
 
 # Configure logging
@@ -230,6 +230,7 @@ app.include_router(subscriptions.router, prefix="/api/v1/subscriptions", tags=["
 app.include_router(integrations.router, prefix="/api/v1/integrations", tags=["🔌 Integrations"])
 app.include_router(suppliers.router, prefix="/api/v1/suppliers", tags=["🏢 Suppliers"])
 app.include_router(recommendations.router, prefix="/api/v1/recommendations", tags=["🧠 Recommendations"])
+app.include_router(admin.router, prefix="/api/v1/admin", tags=["🔒 Admin"])
 
 # Servir archivos estáticos del frontend
 if os.path.exists("apps/web/.next/static"):

@@ -13,7 +13,7 @@ Base = declarative_base()
 class Tenant(Base):
     """Multi-tenant companies"""
     __tablename__ = "tenants"
-    
+
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(String(100), unique=True, nullable=False, index=True)
     company_name = Column(String(255), nullable=False)
@@ -28,6 +28,7 @@ class Tenant(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     is_active = Column(Boolean, default=True)
     password_hash = Column(String(255), nullable=True)
+    pilot_expires_at = Column(DateTime, nullable=True)
 
     # Relationships
     invoices = relationship("ProcessedInvoice", back_populates="tenant", cascade="all, delete-orphan")
@@ -317,6 +318,44 @@ class InventoryMovement(Base):
     # Relationships
     product = relationship("Product")
     invoice = relationship("ProcessedInvoice")
+
+class PendingProductMatch(Base):
+    """Candidatos de matching automático pendientes de confirmación por el usuario."""
+    __tablename__ = "pending_product_matches"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(String(100), ForeignKey("tenants.tenant_id"), nullable=False, index=True)
+    invoice_id = Column(UUID(as_uuid=True), ForeignKey("processed_invoices.id"), nullable=False, index=True)
+    line_item_id = Column(UUID(as_uuid=True), ForeignKey("invoice_line_items.id"), nullable=False, unique=True)
+    line_item_description = Column(Text, nullable=False)
+    alegra_product_id = Column(String(100), nullable=False)  # products.id del candidato local
+    alegra_product_name = Column(Text, nullable=False)
+    match_score = Column(Integer, nullable=False)             # 0-100
+    status = Column(String(20), nullable=False, default="pending")  # pending / confirmed / rejected
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    invoice   = relationship("ProcessedInvoice")
+    line_item = relationship("InvoiceLineItem")
+
+    __table_args__ = (
+        Index("idx_pending_matches_tenant_status", "tenant_id", "status"),
+    )
+
+
+class InvitationCode(Base):
+    """Invitation codes for pilot program access"""
+    __tablename__ = "invitation_codes"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    code = Column(String(50), unique=True, nullable=False, index=True)
+    plan = Column(String(20), nullable=False, default="pro")
+    duration_days = Column(Integer, nullable=False, default=60)
+    max_uses = Column(Integer, nullable=False, default=1)
+    current_uses = Column(Integer, nullable=False, default=0)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)
+
 
 class DefectiveProduct(Base):
     """Track defective products"""

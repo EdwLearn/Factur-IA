@@ -8,9 +8,9 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { FileText, Eye, EyeOff, ArrowLeft } from "lucide-react"
+import { FileText, Eye, EyeOff, ArrowLeft, CheckCircle, XCircle, Loader2 } from "lucide-react"
 import Link from "next/link"
-import { register, generateTenantId } from "@/src/lib/api/endpoints/auth"
+import { register, generateTenantId, validateInviteCode } from "@/src/lib/api/endpoints/auth"
 
 export default function RegisterPage() {
   const router = useRouter()
@@ -25,12 +25,33 @@ export default function RegisterPage() {
   const [confirmPassword, setConfirmPassword] = useState("")
   const [nit, setNit] = useState("")
   const [tenantId, setTenantId] = useState("")
+  const [invitationCode, setInvitationCode] = useState("")
+  const [inviteStatus, setInviteStatus] = useState<"idle" | "checking" | "valid" | "invalid">("idle")
+  const [inviteInfo, setInviteInfo] = useState<{ plan: string; duration_days: number } | null>(null)
+  const [successMessage, setSuccessMessage] = useState("")
   const [error, setError] = useState("")
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
     setTenantId(generateTenantId(companyName))
   }, [companyName])
+
+  const handleCodeBlur = async () => {
+    if (!invitationCode.trim()) {
+      setInviteStatus("idle")
+      setInviteInfo(null)
+      return
+    }
+    setInviteStatus("checking")
+    try {
+      const result = await validateInviteCode(invitationCode)
+      setInviteInfo({ plan: result.plan, duration_days: result.duration_days })
+      setInviteStatus("valid")
+    } catch {
+      setInviteStatus("invalid")
+      setInviteInfo(null)
+    }
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -52,8 +73,16 @@ export default function RegisterPage() {
         email,
         password,
         nit: nit || undefined,
+        invitation_code: invitationCode || undefined,
       })
-      router.push("/dashboard")
+      if (invitationCode && inviteStatus === "valid" && inviteInfo) {
+        setSuccessMessage(
+          `¡Bienvenido! Tu Plan Pro está activo por ${inviteInfo.duration_days} días gracias a tu código de invitación`
+        )
+        setTimeout(() => router.push("/dashboard"), 3000)
+      } else {
+        router.push("/dashboard")
+      }
     } catch (err: any) {
       const msg: string = err.message || ""
       if (msg.includes("already registered") || msg.includes("409")) {
@@ -93,6 +122,12 @@ export default function RegisterPage() {
 
           <CardContent className="space-y-5">
             <form onSubmit={handleSubmit} className="space-y-4">
+              {successMessage && (
+                <div className="rounded-md bg-green-50 px-4 py-3 text-sm text-green-700 border border-green-200 flex items-start gap-2">
+                  <CheckCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                  {successMessage}
+                </div>
+              )}
               {error && (
                 <div className="rounded-md bg-red-50 px-4 py-3 text-sm text-red-700 border border-red-200">
                   {error}
@@ -182,6 +217,44 @@ export default function RegisterPage() {
                   value={nit}
                   onChange={(e) => setNit(e.target.value)}
                 />
+              </div>
+
+              <div className="space-y-1">
+                <Label htmlFor="invitationCode">
+                  Código de invitación{" "}
+                  <span className="text-gray-400 font-normal">(opcional)</span>
+                </Label>
+                <Input
+                  id="invitationCode"
+                  type="text"
+                  placeholder="Ej: BIENVENIDO2026"
+                  value={invitationCode}
+                  onChange={(e) => {
+                    setInvitationCode(e.target.value.toUpperCase())
+                    setInviteStatus("idle")
+                    setInviteInfo(null)
+                  }}
+                  onBlur={handleCodeBlur}
+                  className="uppercase"
+                />
+                {inviteStatus === "checking" && (
+                  <p className="text-xs text-gray-500 flex items-center gap-1">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    Verificando código...
+                  </p>
+                )}
+                {inviteStatus === "valid" && inviteInfo && (
+                  <p className="text-xs text-green-600 flex items-center gap-1">
+                    <CheckCircle className="w-3 h-3" />
+                    Código válido — Plan Pro gratis {inviteInfo.duration_days} días
+                  </p>
+                )}
+                {inviteStatus === "invalid" && (
+                  <p className="text-xs text-red-600 flex items-center gap-1">
+                    <XCircle className="w-3 h-3" />
+                    Código inválido o expirado
+                  </p>
+                )}
               </div>
 
               <Button
