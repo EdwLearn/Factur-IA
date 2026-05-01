@@ -3,7 +3,7 @@ SQLAlchemy models for Invoice SaaS
 """
 from sqlalchemy import Column, String, Integer, DateTime, Text, Boolean, Numeric, Date, ForeignKey, Index
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, backref
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 import uuid
 from datetime import datetime
@@ -125,11 +125,21 @@ class ProcessedInvoice(Base):
     document_type = Column(String(50), nullable=False, server_default='factura')
     # Valores posibles: 'factura', 'remision', 'desconocido'
 
+    # Multi-page invoice support
+    parent_invoice_id = Column(UUID(as_uuid=True), ForeignKey('processed_invoices.id', ondelete='SET NULL'), nullable=True)
+    page_number = Column(Integer, nullable=True, default=1)
+    total_pages = Column(Integer, nullable=True, default=1)
+    is_consolidated = Column(Boolean, nullable=False, default=False)
+
+    # Relationships
+    child_pages = relationship('ProcessedInvoice', foreign_keys=[parent_invoice_id], backref=backref('parent_invoice', remote_side=[id]), lazy='dynamic')
+
     # Indexes for performance
     __table_args__ = (
         Index('idx_tenant_status', 'tenant_id', 'status'),
         Index('idx_tenant_date', 'tenant_id', 'issue_date'),
         Index('idx_supplier_tenant', 'supplier_nit', 'tenant_id'),
+        Index('idx_parent_invoice_id', 'parent_invoice_id'),
     )
 
 class InvoiceLineItem(Base):

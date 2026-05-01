@@ -1322,9 +1322,18 @@ class TextractService:
                 else:
                     code_match = re.match(r'^([A-Z0-9\-\.]{3,15})\s+(.+)$', description, re.IGNORECASE)
                     if code_match:
-                        product_code = code_match.group(1)
-                        description  = code_match.group(2)
-                        logger.info(f"product_code extracted from desc: {product_code!r}")
+                        candidate = code_match.group(1)
+                        has_hyphen = '-' in candidate
+                        has_mixed = (
+                            any(c.isdigit() for c in candidate)
+                            and any(c.isalpha() for c in candidate)
+                        )
+                        if has_hyphen or has_mixed:
+                            product_code = candidate
+                            description  = code_match.group(2)
+                            logger.info(f"product_code extracted from desc: {product_code!r}")
+                        else:
+                            product_code = None
                     else:
                         product_code = None
 

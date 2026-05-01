@@ -2,13 +2,15 @@
 Invoice processing service with REAL Textract - FIXED
 """
 import asyncio
+import difflib
 import json
 import logging
+import re
 import uuid
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime, date, timedelta
 from decimal import Decimal
-from sqlalchemy import select, update, delete, func
+from sqlalchemy import select, update, delete, func, text
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,7 +18,7 @@ from fastapi import HTTPException
 
 from ...core.config import settings
 from ...database.connection import AsyncSessionFactory
-from ...database.models import ProcessedInvoice, InvoiceLineItem, Tenant, BillingRecord, Supplier
+from ...database.models import ProcessedInvoice, InvoiceLineItem, Tenant, BillingRecord, Supplier, Product, PendingProductMatch
 from ...models.invoice import (
     InvoiceData, InvoiceStatus, InvoiceType,
     SupplierInfo, CustomerInfo, InvoiceLineItem as InvoiceLineItemModel, 
@@ -273,6 +275,21 @@ class InvoiceProcessorService:
                             unit_price = self._safe_decimal(item_data.get("unit_price"))
                             subtotal   = self._safe_decimal(item_data.get("subtotal"))
 
+                            # Clamp to NUMERIC(15,2) / NUMERIC(15,4) DB limits
+                            _MAX15_2 = Decimal("9999999999999.99")
+                            _MAX15_4 = Decimal("99999999999.9999")
+                            _MAX_QTY = Decimal("999999")  # sanity: >1M units is always a parse error
+
+                            if unit_price and abs(unit_price) > _MAX15_2:
+                                logger.warning(f"unit_price overflow ({unit_price}), nullified")
+                                unit_price = None
+                            if subtotal and abs(subtotal) > _MAX15_2:
+                                logger.warning(f"subtotal overflow ({subtotal}), nullified")
+                                subtotal = None
+                            if quantity and abs(quantity) > _MAX_QTY:
+                                logger.warning(f"quantity overflow ({quantity}), will re-derive")
+                                quantity = None
+
                             # Fallback: derivar quantity desde subtotal/unit_price
                             if quantity is None:
                                 if unit_price and subtotal and unit_price > 0:
@@ -280,11 +297,39 @@ class InvoiceProcessorService:
                                 else:
                                     quantity = Decimal("1")
 
+                            product_code = self._safe_extract(item_data, "product_code")
+                            description  = self._safe_extract(item_data, "description")
+                            if not product_code and description:
+                                description, product_code = self.extract_code_from_description(description)
+
+                            # PASO 2: si aún no hay código, buscar en catálogo local por similitud
+                            alegra_match = None
+                            if not product_code and description:
+                                alegra_match = await self._find_alegra_product_match(
+                                    session=session,
+                                    tenant_id=invoice.tenant_id,
+                                    description=description,
+                                    supplier_name=invoice.supplier_name or "",
+                                    unit_price=unit_price,
+                                )
+
+                            # PASO 3: si no hay código ni match pendiente, generar GEN-
+                            if not product_code and not alegra_match:
+                                product_code = await self._generate_gen_code(
+                                    session=session,
+                                    tenant_id=invoice.tenant_id,
+                                    supplier_name=invoice.supplier_name or "",
+                                )
+                                logger.info(
+                                    f"GEN code assigned: {product_code} "
+                                    f"for '{(description or '')[:50]}'"
+                                )
+
                             line_item = InvoiceLineItem(
                                 invoice_id=invoice.id,
                                 line_number=self._safe_int(item_data.get("item_number")),
-                                product_code=self._safe_extract(item_data, "product_code"),
-                                description=self._safe_extract(item_data, "description"),
+                                product_code=product_code,
+                                description=description,
                                 reference=self._safe_extract(item_data, "reference"),
                                 quantity=quantity,
                                 unit_price=unit_price,
@@ -298,6 +343,23 @@ class InvoiceProcessorService:
                                 enhancement_applied=self._safe_extract(item_data, "_enhancement_applied")
                             )
                             session.add(line_item)
+
+                            if alegra_match:
+                                matched_product, match_score = alegra_match
+                                session.add(PendingProductMatch(
+                                    tenant_id=invoice.tenant_id,
+                                    invoice_id=invoice.id,
+                                    line_item_id=line_item.id,
+                                    line_item_description=description or "",
+                                    alegra_product_id=str(matched_product.id),
+                                    alegra_product_name=matched_product.description or "",
+                                    match_score=match_score,
+                                    status="pending",
+                                ))
+                                logger.info(
+                                    f"Pending match: '{(description or '')[:50]}' → "
+                                    f"'{(matched_product.description or '')[:50]}' ({match_score}%)"
+                                )
                         except Exception as e:
                             logger.warning(f"Error creating line item: {str(e)}")
                             logger.warning(f"Item data: {item_data}")
@@ -380,6 +442,108 @@ class InvoiceProcessorService:
         logger.info(f"Nuevo proveedor creado: {nit} - {name}")
         return supplier
 
+    @staticmethod
+    def _build_gen_prefix(supplier_name: str) -> str:
+        """Derive 3-char alphanumeric prefix from supplier_name for GEN- codes."""
+        if not supplier_name or not supplier_name.strip():
+            return "UNK"
+        clean = re.sub(r'[^A-Z0-9]', '', supplier_name.upper())
+        if len(clean) >= 3:
+            return clean[:3]
+        return clean.ljust(3, 'X')
+
+    async def _generate_gen_code(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        supplier_name: str,
+    ) -> str:
+        """Generate the next GEN-{PREFIX}-{NNNNN} unique code for this tenant.
+
+        The sequential counter is global per tenant (not per prefix) to guarantee
+        monotonic uniqueness even when products are deleted.
+        """
+        prefix = self._build_gen_prefix(supplier_name)
+        result = await session.execute(
+            text("""
+                SELECT COALESCE(MAX(
+                    CAST(NULLIF(SPLIT_PART(product_code, '-', 3), '') AS INTEGER)
+                ), 0) + 1
+                FROM products
+                WHERE tenant_id = :tenant_id
+                  AND product_code LIKE 'GEN-%'
+            """),
+            {"tenant_id": tenant_id},
+        )
+        next_seq = result.scalar() or 1
+        return f"GEN-{prefix}-{next_seq:05d}"
+
+    async def _find_alegra_product_match(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        description: str,
+        supplier_name: str,
+        unit_price: Optional[Decimal],
+    ) -> Optional[Tuple[Any, int]]:
+        """Busca en el catálogo local un producto que coincida con descripción+proveedor+precio.
+
+        Criterios: similitud de descripción ≥ 90%, mismo proveedor, precio ±10%.
+        Retorna (Product, score_0_100) o None si no hay match.
+        """
+        if not description or not supplier_name:
+            return None
+
+        result = await session.execute(
+            select(Product).where(
+                Product.tenant_id == tenant_id,
+                Product.supplier_name == supplier_name,
+            )
+        )
+        candidates = result.scalars().all()
+
+        best_match = None
+        best_score = 0
+
+        for product in candidates:
+            ratio = difflib.SequenceMatcher(
+                None,
+                description.upper(),
+                (product.description or "").upper(),
+            ).ratio()
+            score = int(ratio * 100)
+
+            if score < 90:
+                continue
+
+            if unit_price and product.last_purchase_price and product.last_purchase_price > 0:
+                price_diff = abs(float(unit_price) - float(product.last_purchase_price))
+                price_pct = price_diff / float(product.last_purchase_price) * 100
+                if price_pct > 10:
+                    continue
+
+            if score > best_score:
+                best_score = score
+                best_match = product
+
+        return (best_match, best_score) if best_match else None
+
+    @staticmethod
+    def extract_code_from_description(description: str) -> Tuple[str, Optional[str]]:
+        """Extract product code embedded at the end of a description string.
+
+        Pattern: uppercase/digit token with at least one hyphen, e.g. HR201-S, AD-CRLGT-7108.
+        Returns (clean_description, extracted_code) or (original, None) when no match.
+        """
+        if not description:
+            return description, None
+        match = re.search(r'\b([A-Z0-9]{2,}(?:-[A-Z0-9]+){1,})$', description.strip())
+        if match:
+            code = match.group(1)
+            clean = description[: match.start()].rstrip()
+            return clean, code
+        return description, None
+
     def _safe_extract(self, data: Dict, key: str) -> Optional[str]:
         """Safely extract string value"""
         if not data or not isinstance(data, dict):
@@ -387,14 +551,18 @@ class InvoiceProcessorService:
         value = data.get(key)
         return str(value)[:255] if value is not None else None
     
+    _MAX_NUMERIC_15_2 = Decimal("9999999999999.99")
+
     def _safe_decimal(self, value) -> Optional[Decimal]:
-        """Safely convert to Decimal"""
+        """Safely convert to Decimal, clamping to NUMERIC(15,2) DB limit."""
         if value is None:
             return None
         try:
-            if isinstance(value, Decimal):
-                return value
-            return Decimal(str(value))
+            d = value if isinstance(value, Decimal) else Decimal(str(value))
+            if abs(d) > self._MAX_NUMERIC_15_2:
+                logger.warning(f"_safe_decimal: value {d} exceeds NUMERIC(15,2), returning None")
+                return None
+            return d
         except Exception:
             return None
     
@@ -612,6 +780,8 @@ class InvoiceProcessorService:
                     select(ProcessedInvoice)
                     .options(selectinload(ProcessedInvoice.line_items))
                     .where(ProcessedInvoice.tenant_id == tenant_id)
+                    # Exclude child pages that were consolidated into a parent invoice
+                    .where(ProcessedInvoice.is_consolidated == False)
                     .order_by(ProcessedInvoice.upload_timestamp.desc())
                     .offset(offset)
                     .limit(limit)
@@ -667,6 +837,11 @@ class InvoiceProcessorService:
         return stored  # return 0.0 or None as-is if no line items either
 
     def _convert_to_pydantic(self, invoice: ProcessedInvoice) -> ProcessedInvoiceModel:
+        try:
+            status = InvoiceStatus(invoice.status)
+        except ValueError:
+            status = InvoiceStatus.FAILED
+
         return ProcessedInvoiceModel(
             id=str(invoice.id),
             tenant_id=invoice.tenant_id,
@@ -675,7 +850,7 @@ class InvoiceProcessorService:
             upload_timestamp=invoice.upload_timestamp,
             processing_timestamp=invoice.processing_timestamp,
             completion_timestamp=invoice.completion_timestamp,
-            status=InvoiceStatus(invoice.status),
+            status=status,
             confidence_score=float(invoice.confidence_score) if invoice.confidence_score else None,
             error_message=invoice.error_message,
             s3_key=invoice.s3_key,
@@ -685,6 +860,10 @@ class InvoiceProcessorService:
             supplier_nit=invoice.supplier_nit,
             total_amount=self._resolve_total(invoice),
             issue_date=invoice.issue_date,
+            parent_invoice_id=str(invoice.parent_invoice_id) if invoice.parent_invoice_id else None,
+            page_number=invoice.page_number,
+            total_pages=invoice.total_pages,
+            is_consolidated=bool(invoice.is_consolidated),
         )
 
     async def upload_and_process_photo(
@@ -1259,6 +1438,191 @@ class InvoiceProcessorService:
                 await session.rollback()
                 logger.error(f"Error confirming pricing: {str(e)}")
                 raise
+
+    async def _wait_and_consolidate(
+        self,
+        parent_id: str,
+        all_invoice_ids: list,
+        timeout: int = 300,
+    ) -> None:
+        """Poll until every page reaches a terminal status, then consolidate."""
+        terminal = {"completed", "failed", "error"}
+        all_uuids = [uuid.UUID(i) for i in all_invoice_ids]
+        deadline = asyncio.get_event_loop().time() + timeout
+
+        while asyncio.get_event_loop().time() < deadline:
+            async with AsyncSessionFactory() as session:
+                result = await session.execute(
+                    select(ProcessedInvoice.id, ProcessedInvoice.status).where(
+                        ProcessedInvoice.id.in_(all_uuids)
+                    )
+                )
+                rows = result.all()
+
+            statuses = {str(r[0]): r[1] for r in rows}
+            pending = [i for i in all_invoice_ids if statuses.get(i) not in terminal]
+
+            if not pending:
+                logger.info(
+                    f"_wait_and_consolidate: all {len(all_invoice_ids)} pages done, "
+                    f"consolidating parent={parent_id}"
+                )
+                break
+
+            logger.debug(
+                f"_wait_and_consolidate: waiting for {len(pending)} pages: {pending}"
+            )
+            await asyncio.sleep(3)
+        else:
+            logger.warning(
+                f"_wait_and_consolidate: timeout after {timeout}s for parent={parent_id}, "
+                "consolidating with available data"
+            )
+
+        await self._consolidate_invoice(parent_id)
+
+    async def _consolidate_invoice(self, parent_id: str) -> None:
+        """Move all line_items from child pages into the parent invoice and recalculate totals.
+        Also fills any missing header fields in the parent from children (first-wins)."""
+        async with AsyncSessionFactory() as session:
+            try:
+                parent_uuid = uuid.UUID(parent_id)
+
+                parent_result = await session.execute(
+                    select(ProcessedInvoice).where(ProcessedInvoice.id == parent_uuid)
+                )
+                parent = parent_result.scalar_one_or_none()
+                if not parent:
+                    logger.error(f"_consolidate_invoice: parent {parent_id} not found")
+                    return
+
+                # Fetch all child pages
+                children_result = await session.execute(
+                    select(ProcessedInvoice).where(
+                        ProcessedInvoice.parent_invoice_id == parent_uuid
+                    )
+                )
+                children = children_result.scalars().all()
+
+                if not children:
+                    logger.info(f"_consolidate_invoice: no children for {parent_id}, nothing to do")
+                    return
+
+                # 1. Move all line_items from children to parent
+                child_ids = [c.id for c in children]
+                await session.execute(
+                    update(InvoiceLineItem)
+                    .where(InvoiceLineItem.invoice_id.in_(child_ids))
+                    .values(invoice_id=parent_uuid)
+                )
+
+                # 2. Fill missing header fields from children (first child that has the value wins)
+                str_fields = [
+                    "invoice_number", "supplier_name", "supplier_nit", "supplier_address",
+                    "supplier_city", "supplier_department", "supplier_phone",
+                    "customer_name", "customer_id", "customer_address",
+                    "customer_city", "customer_department", "customer_phone",
+                    "payment_method", "observations", "authorization", "cufe", "invoice_type",
+                ]
+                date_fields = ["issue_date", "due_date"]
+
+                for child in children:
+                    for field in str_fields:
+                        if not getattr(parent, field) and getattr(child, field):
+                            setattr(parent, field, getattr(child, field))
+                    for field in date_fields:
+                        if not getattr(parent, field) and getattr(child, field):
+                            setattr(parent, field, getattr(child, field))
+                    if parent.credit_days is None and child.credit_days is not None:
+                        parent.credit_days = child.credit_days
+                    if parent.discount_percentage is None and child.discount_percentage is not None:
+                        parent.discount_percentage = child.discount_percentage
+
+                # 3. Recalculate totals from all line_items now under parent
+                items_result = await session.execute(
+                    select(InvoiceLineItem).where(InvoiceLineItem.invoice_id == parent_uuid)
+                )
+                all_items = items_result.scalars().all()
+
+                new_subtotal = sum(item.subtotal or Decimal("0") for item in all_items)
+                new_iva = sum(
+                    (item.subtotal or Decimal("0")) * ((item.iva_rate or Decimal("0")) / 100)
+                    for item in all_items
+                )
+
+                # Sum retenciones across all pages
+                all_pages = [parent] + list(children)
+                total_rete_renta = sum(p.rete_renta or Decimal("0") for p in all_pages)
+                total_rete_iva = sum(p.rete_iva or Decimal("0") for p in all_pages)
+                total_rete_ica = sum(p.rete_ica or Decimal("0") for p in all_pages)
+                total_retenciones = total_rete_renta + total_rete_iva + total_rete_ica
+                new_total = new_subtotal + new_iva - total_retenciones
+
+                # Use the lowest (most conservative) confidence score across all pages
+                confidence_scores = [
+                    p.confidence_score for p in all_pages if p.confidence_score is not None
+                ]
+                consolidated_confidence = min(confidence_scores) if confidence_scores else None
+
+                total_pages = 1 + len(children)
+
+                await session.execute(
+                    update(ProcessedInvoice)
+                    .where(ProcessedInvoice.id == parent_uuid)
+                    .values(
+                        invoice_number=parent.invoice_number,
+                        supplier_name=parent.supplier_name,
+                        supplier_nit=parent.supplier_nit,
+                        supplier_address=parent.supplier_address,
+                        supplier_city=parent.supplier_city,
+                        supplier_department=parent.supplier_department,
+                        supplier_phone=parent.supplier_phone,
+                        customer_name=parent.customer_name,
+                        customer_id=parent.customer_id,
+                        customer_address=parent.customer_address,
+                        customer_city=parent.customer_city,
+                        customer_department=parent.customer_department,
+                        customer_phone=parent.customer_phone,
+                        payment_method=parent.payment_method,
+                        credit_days=parent.credit_days,
+                        discount_percentage=parent.discount_percentage,
+                        observations=parent.observations,
+                        authorization=parent.authorization,
+                        cufe=parent.cufe,
+                        invoice_type=parent.invoice_type,
+                        issue_date=parent.issue_date,
+                        due_date=parent.due_date,
+                        subtotal=new_subtotal,
+                        iva_amount=new_iva,
+                        rete_renta=total_rete_renta,
+                        rete_iva=total_rete_iva,
+                        rete_ica=total_rete_ica,
+                        total_retenciones=total_retenciones,
+                        total_amount=new_total,
+                        total_items=len(all_items),
+                        total_pages=total_pages,
+                        page_number=1,
+                        confidence_score=consolidated_confidence,
+                        status="completed",
+                    )
+                )
+
+                # Mark children as consolidated
+                await session.execute(
+                    update(ProcessedInvoice)
+                    .where(ProcessedInvoice.id.in_(child_ids))
+                    .values(is_consolidated=True, status="merged")
+                )
+
+                await session.commit()
+                logger.info(
+                    f"_consolidate_invoice: {parent_id} consolidated {len(children)} pages, "
+                    f"{len(all_items)} items, total={new_total}, confidence={consolidated_confidence}"
+                )
+
+            except Exception as e:
+                await session.rollback()
+                logger.error(f"_consolidate_invoice error for {parent_id}: {e}")
 
     def _safe_date(self, value) -> Optional[date]:
         """Safely convert to date object"""

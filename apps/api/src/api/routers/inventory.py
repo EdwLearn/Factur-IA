@@ -12,14 +12,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import List, Optional
 from decimal import Decimal
 from datetime import datetime, date
-from sqlalchemy import select, func, and_, or_, desc
+from sqlalchemy import select, update, func, and_, or_, desc, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, Field
 import logging
 import uuid
 
 from ...database.connection import AsyncSessionFactory
-from ...database.models import Product, InventoryMovement, DefectiveProduct, ProcessedInvoice
+from ...database.models import Product, InventoryMovement, DefectiveProduct, ProcessedInvoice, PendingProductMatch, InvoiceLineItem
 from ...services.sales_sync_service import SalesSyncService
 from ..deps import get_tenant_id
 
@@ -180,6 +180,25 @@ class InventoryStats(BaseModel):
     total_defective_items: int
 
 
+class PendingMatchResponse(BaseModel):
+    id: str
+    invoice_id: str
+    line_item_id: str
+    line_item_description: str
+    alegra_product_id: str
+    alegra_product_name: str
+    match_score: int
+    status: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ConfirmMatchRequest(BaseModel):
+    is_same_product: bool
+
+
 # Helper function to get database session
 async def get_db() -> AsyncSession:
     """Get async database session"""
@@ -295,6 +314,148 @@ async def list_products(
     except Exception as e:
         logger.error(f"Error listing products for tenant {x_tenant_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error listing products: {str(e)}")
+
+
+@router.get(
+    "/products/pending-matches",
+    response_model=List[PendingMatchResponse],
+    summary="Listar matches pendientes de confirmación",
+)
+async def list_pending_matches(
+    x_tenant_id: str = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Devuelve todos los matches automáticos con status='pending' para el tenant."""
+    try:
+        result = await db.execute(
+            select(PendingProductMatch)
+            .where(
+                PendingProductMatch.tenant_id == x_tenant_id,
+                PendingProductMatch.status == "pending",
+            )
+            .order_by(PendingProductMatch.created_at.desc())
+        )
+        matches = result.scalars().all()
+        return [
+            PendingMatchResponse(
+                id=str(m.id),
+                invoice_id=str(m.invoice_id),
+                line_item_id=str(m.line_item_id),
+                line_item_description=m.line_item_description,
+                alegra_product_id=m.alegra_product_id,
+                alegra_product_name=m.alegra_product_name,
+                match_score=m.match_score,
+                status=m.status,
+                created_at=m.created_at,
+            )
+            for m in matches
+        ]
+    except Exception as e:
+        logger.error(f"Error listing pending matches: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _gen_prefix(supplier_name: str) -> str:
+    """Mismo algoritmo que InvoiceProcessorService._build_gen_prefix."""
+    import re
+    if not supplier_name or not supplier_name.strip():
+        return "UNK"
+    clean = re.sub(r'[^A-Z0-9]', '', supplier_name.upper())
+    if len(clean) >= 3:
+        return clean[:3]
+    return clean.ljust(3, 'X')
+
+
+@router.post(
+    "/products/pending-matches/{match_id}/confirm",
+    summary="Confirmar o rechazar un match pendiente",
+)
+async def confirm_pending_match(
+    match_id: str,
+    body: ConfirmMatchRequest,
+    x_tenant_id: str = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Confirma o rechaza una sugerencia de producto.
+
+    - **is_same_product=true**: asigna el producto existente al line item
+    - **is_same_product=false**: genera un código GEN- nuevo para el line item
+    """
+    try:
+        match_result = await db.execute(
+            select(PendingProductMatch).where(
+                PendingProductMatch.id == uuid.UUID(match_id),
+                PendingProductMatch.tenant_id == x_tenant_id,
+                PendingProductMatch.status == "pending",
+            )
+        )
+        pending = match_result.scalar_one_or_none()
+        if not pending:
+            raise HTTPException(status_code=404, detail="Pending match not found or already resolved")
+
+        line_item_result = await db.execute(
+            select(InvoiceLineItem).where(InvoiceLineItem.id == pending.line_item_id)
+        )
+        line_item = line_item_result.scalar_one_or_none()
+        if not line_item:
+            raise HTTPException(status_code=404, detail="Line item not found")
+
+        if body.is_same_product:
+            product_result = await db.execute(
+                select(Product).where(
+                    Product.id == uuid.UUID(pending.alegra_product_id),
+                    Product.tenant_id == x_tenant_id,
+                )
+            )
+            product = product_result.scalar_one_or_none()
+            if not product:
+                raise HTTPException(status_code=404, detail="Matched product not found")
+            line_item.product_code = product.product_code
+            line_item.product_id = product.id
+            pending.status = "confirmed"
+        else:
+            invoice_result = await db.execute(
+                select(ProcessedInvoice).where(ProcessedInvoice.id == pending.invoice_id)
+            )
+            invoice = invoice_result.scalar_one_or_none()
+            supplier_name = (invoice.supplier_name or "") if invoice else ""
+
+            prefix = _gen_prefix(supplier_name)
+            seq_result = await db.execute(
+                text("""
+                    SELECT COALESCE(MAX(
+                        CAST(NULLIF(SPLIT_PART(product_code, '-', 3), '') AS INTEGER)
+                    ), 0) + 1
+                    FROM products
+                    WHERE tenant_id = :tenant_id
+                      AND product_code LIKE 'GEN-%'
+                """),
+                {"tenant_id": x_tenant_id},
+            )
+            next_seq = seq_result.scalar() or 1
+            gen_code = f"GEN-{prefix}-{next_seq:05d}"
+            line_item.product_code = gen_code
+            pending.status = "rejected"
+
+        db.add(line_item)
+        db.add(pending)
+        await db.commit()
+
+        return {
+            "match_id": match_id,
+            "status": pending.status,
+            "product_code": line_item.product_code,
+        }
+
+    except HTTPException:
+        raise
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid UUID format")
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Error confirming match {match_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/products/{product_id}", response_model=ProductResponse)

@@ -14,12 +14,15 @@ import {
   Tooltip,
   ResponsiveContainer,
   Cell,
+  ReferenceLine,
 } from "recharts"
 import {
   type TopSuppliersResponse,
   type TopProductsResponse,
   type PriceEvolutionResponse,
   type PriceAlertsResponse,
+  type MonthlyInvoiceData,
+  type TopProductData,
 } from "@/src/lib/api/endpoints/dashboard"
 import { facturaAPI } from "@/lib/api"
 
@@ -443,6 +446,117 @@ export function SalesRotationChart() {
             <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-emerald-400 inline-block" /> &gt;20 (sano)</span>
           </div>
         </>
+      )}
+    </div>
+  )
+}
+
+// ─── Chart 6: Monthly Purchase Spend ─────────────────────────────────────────
+
+export function MonthlyPurchaseChart({ data }: { data: MonthlyInvoiceData[] | null }) {
+  const chartData = (data ?? []).map((d) => ({
+    month: d.month,
+    value: d.value,
+    invoices: d.invoices,
+  }))
+
+  return (
+    <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-6">
+      <p className="text-sm font-semibold text-gray-600 dark:text-gray-300 mb-4">
+        Gasto Mensual en Compras
+      </p>
+
+      {data === null ? (
+        <ChartSkeleton />
+      ) : chartData.length === 0 ? (
+        <EmptyState message="Sin datos de compras para mostrar" />
+      ) : (
+        <ResponsiveContainer width="100%" height={260}>
+          <BarChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
+            <XAxis dataKey="month" tick={{ fontSize: 11 }} />
+            <YAxis
+              tick={{ fontSize: 11 }}
+              tickFormatter={(v) => `$${(v / 1_000_000).toFixed(1)}M`}
+            />
+            <Tooltip
+              formatter={(value: number, _name: string, props: any) => [
+                COP(value),
+                `${props.payload.invoices} factura(s)`,
+              ]}
+              labelFormatter={(label) => label}
+            />
+            <Bar dataKey="value" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      )}
+    </div>
+  )
+}
+
+// ─── Chart 7: Margin by Product ───────────────────────────────────────────────
+
+export function MarginByProductChart({ data }: { data: TopProductData[] | null }) {
+  const chartData = (data ?? [])
+    .filter((p) => p.margin !== null)
+    .slice(0, 10)
+    .map((p) => ({
+      name: p.description.length > 18 ? p.description.slice(0, 18) + "…" : p.description,
+      fullName: p.description,
+      margin: p.margin as number,
+      sale_price: p.sale_price,
+      cost_price: p.cost_price,
+    }))
+    .sort((a, b) => b.margin - a.margin)
+
+  return (
+    <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-6">
+      <p className="text-sm font-semibold text-gray-600 dark:text-gray-300 mb-4">
+        Margen por Producto (%)
+      </p>
+
+      {data === null ? (
+        <ChartSkeleton />
+      ) : chartData.length === 0 ? (
+        <EmptyState message="Asigna precios de venta a los productos para ver márgenes" />
+      ) : (
+        <ResponsiveContainer width="100%" height={260}>
+          <BarChart
+            layout="vertical"
+            data={chartData}
+            margin={{ top: 0, right: 40, left: 8, bottom: 0 }}
+          >
+            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
+            <XAxis
+              type="number"
+              tick={{ fontSize: 11 }}
+              tickFormatter={(v) => `${v}%`}
+              domain={[0, "auto"]}
+            />
+            <YAxis
+              type="category"
+              dataKey="name"
+              tick={{ fontSize: 10 }}
+              width={140}
+            />
+            <ReferenceLine x={30} stroke="#f59e0b" strokeDasharray="4 2" label={{ value: "30%", fontSize: 10, fill: "#f59e0b" }} />
+            <Tooltip
+              formatter={(value: number, _name: string, props: any) => [
+                `${value.toFixed(1)}%  (Compra: ${COP(props.payload.cost_price)} → Venta: ${COP(props.payload.sale_price)})`,
+                props.payload.fullName,
+              ]}
+              labelFormatter={() => ""}
+            />
+            <Bar dataKey="margin" radius={[0, 4, 4, 0]}>
+              {chartData.map((item, i) => (
+                <Cell
+                  key={i}
+                  fill={item.margin >= 30 ? "#10b981" : item.margin >= 15 ? "#f59e0b" : "#ef4444"}
+                />
+              ))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
       )}
     </div>
   )

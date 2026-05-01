@@ -4,6 +4,7 @@ Invoice processing endpoints with multi-tenant support - FIXED
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Header
 from fastapi.responses import JSONResponse
 from fastapi.responses import Response
+import asyncio
 import uuid
 from typing import List, Optional, Dict, Any
 import logging
@@ -332,6 +333,233 @@ async def delete_invoice(
             detail=f"Failed to delete invoice: {str(e)}"
         )
 
+
+
+@router.post("/upload-multipage")
+async def upload_multipage_invoice(
+    files: List[UploadFile] = File(..., description="Photos/PDFs of each page of the same invoice"),
+    tenant_id: str = Depends(get_tenant_id)
+):
+    """Upload multiple files as pages of a single invoice. Files are processed individually
+    and then consolidated: all line_items merge into the first (parent) invoice."""
+    if not files:
+        raise HTTPException(status_code=400, detail="At least one file is required")
+    if len(files) > 10:
+        raise HTTPException(status_code=400, detail="Maximum 10 pages per invoice")
+
+    allowed_extensions = {'.pdf', '.xml', '.jpg', '.jpeg', '.png', '.webp'}
+    for f in files:
+        ext = '.' + f.filename.lower().rsplit('.', 1)[-1]
+        if ext not in allowed_extensions:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File '{f.filename}': only PDF, XML, JPG, PNG and WEBP are supported"
+            )
+
+    # Subscription limit check (count as 1 invoice — the parent)
+    from ..routers.subscriptions import maybe_reset_invoice_counter
+    await maybe_reset_invoice_counter(tenant_id)
+
+    async with AsyncSessionFactory() as _sess:
+        _result = await _sess.execute(select(Tenant).where(Tenant.tenant_id == tenant_id))
+        _tenant = _result.scalar_one_or_none()
+
+    if _tenant:
+        from ...config.plans import get_plan
+        _plan = get_plan(_tenant.plan)
+        if (
+            _plan.invoice_limit is not None
+            and (_tenant.invoices_processed_month or 0) >= _plan.invoice_limit
+        ):
+            raise HTTPException(
+                status_code=402,
+                detail=(
+                    f"Has alcanzado el límite de {_plan.invoice_limit} facturas/mes "
+                    f"del plan {_plan.display_name}. Actualiza tu plan para continuar procesando."
+                ),
+            )
+
+    pages_info = []
+    parent_invoice_id: Optional[str] = None
+
+    for page_num, upload_file in enumerate(files, start=1):
+        invoice_id = str(uuid.uuid4())
+        file_content = await upload_file.read()
+
+        # Process normally (reuse existing pipeline)
+        await invoice_service.upload_and_process_invoice(
+            tenant_id=tenant_id,
+            invoice_id=invoice_id,
+            filename=upload_file.filename,
+            file_content=file_content,
+        )
+
+        # Tag page metadata
+        async with AsyncSessionFactory() as session:
+            from ...database.models import ProcessedInvoice as ProcessedInvoiceDB
+            if page_num == 1:
+                parent_invoice_id = invoice_id
+                await session.execute(
+                    update(ProcessedInvoiceDB)
+                    .where(ProcessedInvoiceDB.id == uuid.UUID(invoice_id))
+                    .values(page_number=1, total_pages=len(files))
+                )
+            else:
+                await session.execute(
+                    update(ProcessedInvoiceDB)
+                    .where(ProcessedInvoiceDB.id == uuid.UUID(invoice_id))
+                    .values(
+                        parent_invoice_id=uuid.UUID(parent_invoice_id),
+                        page_number=page_num,
+                        total_pages=len(files),
+                    )
+                )
+            await session.commit()
+
+        pages_info.append({
+            "id": invoice_id,
+            "page": page_num,
+            "filename": upload_file.filename,
+            "status": "processing",
+        })
+
+    # Consolidate only when every page has finished — no arbitrary sleep
+    all_invoice_ids = [p["id"] for p in pages_info]
+    asyncio.create_task(
+        invoice_service._wait_and_consolidate(parent_invoice_id, all_invoice_ids)
+    )
+
+    logger.info(
+        f"Multipage upload: {len(files)} pages, parent={parent_invoice_id}, tenant={tenant_id}"
+    )
+
+    return {
+        "parent_invoice_id": parent_invoice_id,
+        "total_pages": len(files),
+        "pages": pages_info,
+        "message": (
+            f"{len(files)} páginas subidas. Se consolidarán automáticamente "
+            "al terminar el procesamiento de todas las páginas."
+        ),
+    }
+
+
+@router.post("/merge")
+async def merge_invoices(
+    merge_data: Dict[str, Any],
+    tenant_id: str = Depends(get_tenant_id)
+):
+    """Merge secondary invoices into a primary one, moving all line_items and recalculating totals."""
+    primary_id_str = merge_data.get("primary_invoice_id")
+    secondary_ids = merge_data.get("secondary_invoice_ids", [])
+
+    if not primary_id_str:
+        raise HTTPException(status_code=400, detail="primary_invoice_id is required")
+    if not secondary_ids:
+        raise HTTPException(status_code=400, detail="secondary_invoice_ids must have at least one entry")
+
+    primary_uuid = validate_uuid(primary_id_str)
+    secondary_uuids = [validate_uuid(sid) for sid in secondary_ids]
+
+    async with AsyncSessionFactory() as session:
+        from ...database.models import ProcessedInvoice as ProcessedInvoiceDB
+        from sqlalchemy import select as sa_select
+
+        # Load primary
+        primary_result = await session.execute(
+            sa_select(ProcessedInvoiceDB)
+            .where(ProcessedInvoiceDB.id == primary_uuid)
+            .where(ProcessedInvoiceDB.tenant_id == tenant_id)
+        )
+        primary = primary_result.scalar_one_or_none()
+        if not primary:
+            raise HTTPException(status_code=404, detail="Primary invoice not found")
+
+        # Load secondaries — all must belong to same tenant
+        secondaries_result = await session.execute(
+            sa_select(ProcessedInvoiceDB)
+            .where(ProcessedInvoiceDB.id.in_(secondary_uuids))
+            .where(ProcessedInvoiceDB.tenant_id == tenant_id)
+        )
+        secondaries = secondaries_result.scalars().all()
+
+        if len(secondaries) != len(secondary_uuids):
+            raise HTTPException(
+                status_code=404,
+                detail="One or more secondary invoices not found or belong to a different tenant"
+            )
+
+        # Warn if different supplier NITs (but allow)
+        warnings = []
+        for sec in secondaries:
+            if sec.supplier_nit and primary.supplier_nit and sec.supplier_nit != primary.supplier_nit:
+                warnings.append(
+                    f"Invoice {sec.id} has different supplier NIT ({sec.supplier_nit} vs {primary.supplier_nit})"
+                )
+
+        # Move all line_items from secondaries to primary
+        sec_ids = [s.id for s in secondaries]
+        await session.execute(
+            update(InvoiceLineItem)
+            .where(InvoiceLineItem.invoice_id.in_(sec_ids))
+            .values(invoice_id=primary_uuid)
+            .execution_options(synchronize_session=False)
+        )
+
+        # Recalculate totals for primary (flush so the SELECT sees the moved items)
+        await session.flush()
+        items_result = await session.execute(
+            sa_select(InvoiceLineItem).where(InvoiceLineItem.invoice_id == primary_uuid)
+        )
+        all_items = items_result.scalars().all()
+
+        from decimal import Decimal as _Decimal
+        new_subtotal = sum(item.subtotal or _Decimal("0") for item in all_items)
+        new_iva = sum(
+            (item.subtotal or _Decimal("0")) * ((item.iva_rate or _Decimal("0")) / 100)
+            for item in all_items
+        )
+        new_total = new_subtotal + new_iva - (primary.rete_renta or _Decimal("0"))
+
+        await session.execute(
+            update(ProcessedInvoiceDB)
+            .where(ProcessedInvoiceDB.id == primary_uuid)
+            .values(
+                subtotal=new_subtotal,
+                iva_amount=new_iva,
+                total_amount=new_total,
+                total_items=len(all_items),
+            )
+            .execution_options(synchronize_session=False)
+        )
+
+        # Mark secondaries as merged
+        await session.execute(
+            update(ProcessedInvoiceDB)
+            .where(ProcessedInvoiceDB.id.in_(sec_ids))
+            .values(
+                status="merged",
+                parent_invoice_id=primary_uuid,
+                is_consolidated=True,
+            )
+            .execution_options(synchronize_session=False)
+        )
+
+        await session.commit()
+
+    logger.info(
+        f"Merge: primary={primary_id_str}, merged={secondary_ids}, "
+        f"items={len(all_items)}, total={new_total}, tenant={tenant_id}"
+    )
+
+    return {
+        "message": f"Facturas fusionadas exitosamente. {len(secondaries)} factura(s) consolidadas en la principal.",
+        "primary_invoice_id": primary_id_str,
+        "merged_invoice_ids": secondary_ids,
+        "total_items": len(all_items),
+        "new_total_amount": float(new_total),
+        "warnings": warnings,
+    }
 
 
 @router.post("/upload-photo", response_model=ProcessedInvoice)

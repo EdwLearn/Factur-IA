@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 
 from ...database.connection import AsyncSessionFactory
-from ...database.models import ProcessedInvoice as Invoice, InvoiceLineItem, Product, Supplier
+from ...database.models import ProcessedInvoice as Invoice, InvoiceLineItem, Product, Supplier, InventoryMovement
 from ...models.invoice import InvoiceStatus
 from pydantic import BaseModel
 from ..deps import get_tenant_id
@@ -39,7 +39,8 @@ class DashboardMetrics(BaseModel):
     total_suppliers: int
     total_products: int
     month_over_month_invoices: float
-    month_over_month_inventory: float
+    month_over_month_inventory: float | None
+    avg_margin: float | None
 
 
 class RecentInvoice(BaseModel):
@@ -129,14 +130,13 @@ async def get_dashboard_metrics(
             result = await session.execute(suppliers_query)
             total_suppliers = result.scalar() or 0
 
-            # Calculate total inventory value (products with sale_price set)
+            # Calculate total inventory value — same formula as /inventory/stats
             inventory_value_query = select(
-                func.sum(Product.quantity * Product.sale_price)
+                func.sum(Product.current_stock * Product.sale_price)
             ).where(
                 and_(
                     Product.tenant_id == tenant_id,
                     Product.sale_price.isnot(None),
-                    Product.quantity > 0
                 )
             )
             result = await session.execute(inventory_value_query)
@@ -159,6 +159,66 @@ async def get_dashboard_metrics(
             result = await session.execute(products_count_query)
             total_products = result.scalar() or 0
 
+            # Estimate previous month inventory value via movements this month
+            entry_query = select(
+                func.coalesce(
+                    func.sum(InventoryMovement.quantity * InventoryMovement.unit_price), 0
+                )
+            ).where(
+                and_(
+                    InventoryMovement.tenant_id == tenant_id,
+                    InventoryMovement.tipo == 'entrada',
+                    InventoryMovement.unit_price.isnot(None),
+                    InventoryMovement.movement_date >= month_start,
+                )
+            )
+            result = await session.execute(entry_query)
+            entry_value = float(result.scalar() or 0)
+
+            exit_query = select(
+                func.coalesce(
+                    func.sum(InventoryMovement.quantity * InventoryMovement.unit_price), 0
+                )
+            ).where(
+                and_(
+                    InventoryMovement.tenant_id == tenant_id,
+                    InventoryMovement.tipo == 'salida',
+                    InventoryMovement.unit_price.isnot(None),
+                    InventoryMovement.movement_date >= month_start,
+                )
+            )
+            result = await session.execute(exit_query)
+            exit_value = float(result.scalar() or 0)
+
+            prev_inventory_value = total_inventory_value - entry_value + exit_value
+            if prev_inventory_value > 0:
+                mom_inventory: float | None = round(
+                    (total_inventory_value - prev_inventory_value) / prev_inventory_value * 100, 1
+                )
+            else:
+                mom_inventory = None
+
+            # Average margin from priced line items (all time, this tenant)
+            margin_query = select(
+                func.avg(
+                    ((InvoiceLineItem.sale_price - InvoiceLineItem.unit_price) /
+                     InvoiceLineItem.sale_price * 100)
+                )
+            ).select_from(InvoiceLineItem).join(
+                Invoice, InvoiceLineItem.invoice_id == Invoice.id
+            ).where(
+                and_(
+                    Invoice.tenant_id == tenant_id,
+                    InvoiceLineItem.sale_price.isnot(None),
+                    InvoiceLineItem.sale_price > 0,
+                    InvoiceLineItem.unit_price > 0,
+                    Invoice.status == 'completed'
+                )
+            )
+            result = await session.execute(margin_query)
+            avg_margin_raw = result.scalar()
+            avg_margin: float | None = round(float(avg_margin_raw), 1) if avg_margin_raw else None
+
             return DashboardMetrics(
                 total_invoices_month=total_invoices_month,
                 total_inventory_value=total_inventory_value,
@@ -166,7 +226,8 @@ async def get_dashboard_metrics(
                 total_suppliers=total_suppliers,
                 total_products=total_products,
                 month_over_month_invoices=round(mom_invoices, 1),
-                month_over_month_inventory=8.0
+                month_over_month_inventory=mom_inventory,
+                avg_margin=avg_margin,
             )
 
     except Exception as e:
@@ -229,6 +290,7 @@ async def get_recent_invoices(
 
 @router.get("/analytics", response_model=AnalyticsData)
 async def get_analytics_data(
+    months: int = Query(default=8, ge=1, le=24),
     tenant_id: str = Depends(get_tenant_id)
 ):
     """
@@ -262,11 +324,11 @@ async def get_analytics_data(
                     volume=volume
                 ))
 
-            # Calculate margin trends (last 8 months)
+            # Calculate margin trends
             margin_trends = []
             month_names = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
 
-            for i in range(8, 0, -1):
+            for i in range(months, 0, -1):
                 # Calculate month range
                 month_end = now - timedelta(days=(i-1)*30)
                 month_start = month_end - timedelta(days=30)
@@ -275,7 +337,7 @@ async def get_analytics_data(
                 margin_query = select(
                     func.avg(
                         ((InvoiceLineItem.sale_price - InvoiceLineItem.unit_price) /
-                         InvoiceLineItem.unit_price * 100)
+                         InvoiceLineItem.sale_price * 100)
                     ).label('avg_margin')
                 ).select_from(InvoiceLineItem).join(
                     Invoice, InvoiceLineItem.invoice_id == Invoice.id
@@ -466,7 +528,7 @@ async def get_analytics_data(
 @router.get("/reports")
 async def get_reports_data(
     tenant_id: str = Depends(get_tenant_id),
-    months: int = 12,
+    days: int = 365,
 ):
     """
     Get data for the Reports tab:
@@ -477,7 +539,7 @@ async def get_reports_data(
     try:
         async with AsyncSessionFactory() as session:
             now = datetime.utcnow()
-            start_date = now - timedelta(days=months * 30)
+            start_date = now - timedelta(days=days)
             month_names = ["Ene", "Feb", "Mar", "Abr", "May", "Jun",
                            "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
 
@@ -817,22 +879,24 @@ async def get_price_alerts(tenant_id: str = Depends(get_tenant_id)):
                     SELECT description, unit_price AS precio_anterior
                     FROM ranked WHERE rn = 2
                 )
-                SELECT
-                    pa.description,
-                    pa.product_code,
-                    pa.precio_actual,
-                    pant.precio_anterior,
-                    pa.supplier_name,
-                    ROUND(
-                        ((pa.precio_actual - pant.precio_anterior)
-                         / NULLIF(pant.precio_anterior, 0) * 100)::numeric, 1
-                    ) AS variacion_pct
-                FROM precio_actual pa
-                JOIN precio_anterior pant ON pa.description = pant.description
-                WHERE ABS(
-                    (pa.precio_actual - pant.precio_anterior)
-                    / NULLIF(pant.precio_anterior, 0) * 100
-                ) >= 10
+                SELECT * FROM (
+                    SELECT
+                        pa.description,
+                        pa.product_code,
+                        pa.precio_actual,
+                        pant.precio_anterior,
+                        pa.supplier_name,
+                        ROUND(
+                            ((pa.precio_actual - pant.precio_anterior)
+                             / NULLIF(pant.precio_anterior, 0) * 100)::numeric, 1
+                        ) AS variacion_pct
+                    FROM precio_actual pa
+                    JOIN precio_anterior pant ON pa.description = pant.description
+                    WHERE ABS(
+                        (pa.precio_actual - pant.precio_anterior)
+                        / NULLIF(pant.precio_anterior, 0) * 100
+                    ) >= 10
+                ) sub
                 ORDER BY ABS(variacion_pct) DESC
                 LIMIT 10
             """)
@@ -897,3 +961,189 @@ async def get_purchase_volume(tenant_id: str = Depends(get_tenant_id)):
     except Exception as e:
         logger.error(f"Error fetching purchase volume: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch purchase volume: {str(e)}")
+
+
+# ─── Endpoint 6: Sales report (Alegra sales → inventory_movements) ────────────
+
+class SalesKPIs(BaseModel):
+    total_revenue: float
+    total_units_sold: int
+    total_orders: int
+    avg_ticket: float
+
+class RevenuePoint(BaseModel):
+    date: str
+    revenue: float
+    units: int
+
+class TopSalesProduct(BaseModel):
+    name: str
+    units_sold: int
+    revenue: float
+    revenue_pct: float
+
+class SalesComparison(BaseModel):
+    current_month_revenue: float
+    previous_month_revenue: float
+    change_pct: float
+
+class SalesReportResponse(BaseModel):
+    kpis: SalesKPIs
+    revenue_over_time: List[RevenuePoint]
+    top_products: List[TopSalesProduct]
+    comparison: Optional[SalesComparison] = None
+
+
+_VALID_SALES_PERIODS = {"current_month", "last_30_days", "month_comparison"}
+
+
+@router.get("/reports/sales", response_model=SalesReportResponse)
+async def get_sales_report(
+    period: str = Query(default="last_30_days"),
+    tenant_id: str = Depends(get_tenant_id),
+):
+    """
+    Sales KPIs and trends from inventory_movements
+    (tipo='salida', origen='factura_venta_alegra').
+
+    period:
+    - current_month     → from the 1st of the current month to today
+    - last_30_days      → rolling 30-day window
+    - month_comparison  → current month data + comparison block vs previous month
+    """
+    if period not in _VALID_SALES_PERIODS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"period must be one of: {', '.join(sorted(_VALID_SALES_PERIODS))}",
+        )
+
+    try:
+        async with AsyncSessionFactory() as session:
+            today = datetime.utcnow().date()
+
+            if period in ("current_month", "month_comparison"):
+                start_date = today.replace(day=1)
+            else:
+                start_date = today - timedelta(days=30)
+
+            params = {"tenant_id": tenant_id, "start_date": start_date, "end_date": today}
+
+            # ── KPIs ──────────────────────────────────────────────────────────
+            # total_orders: each Alegra invoice = one order.
+            # origen_id is stored as "{alegra_invoice_id}_{alegra_item_id}" (integers),
+            # so SPLIT_PART(..., '_', 1) extracts the invoice portion.
+            # NULL origen_id rows are excluded by the IS NOT NULL filter.
+            kpi_row = (await session.execute(text("""
+                SELECT
+                    COALESCE(SUM(quantity * unit_price), 0)           AS total_revenue,
+                    COALESCE(SUM(quantity), 0)                        AS total_units,
+                    COUNT(DISTINCT SPLIT_PART(origen_id, '_', 1))     AS total_orders
+                FROM inventory_movements
+                WHERE tenant_id = :tenant_id
+                  AND tipo      = 'salida'
+                  AND origen    = 'factura_venta_alegra'
+                  AND fecha     BETWEEN :start_date AND :end_date
+                  AND origen_id IS NOT NULL
+            """), params)).one()
+
+            total_revenue = float(kpi_row.total_revenue or 0)
+            total_units   = int(kpi_row.total_units or 0)
+            total_orders  = int(kpi_row.total_orders or 0)
+            avg_ticket    = round(total_revenue / total_orders, 2) if total_orders > 0 else 0.0
+
+            # ── Revenue over time (daily) ──────────────────────────────────────
+            rot_rows = (await session.execute(text("""
+                SELECT
+                    fecha::text                                       AS date,
+                    COALESCE(SUM(quantity * unit_price), 0)           AS revenue,
+                    COALESCE(SUM(quantity), 0)                        AS units
+                FROM inventory_movements
+                WHERE tenant_id = :tenant_id
+                  AND tipo      = 'salida'
+                  AND origen    = 'factura_venta_alegra'
+                  AND fecha     BETWEEN :start_date AND :end_date
+                GROUP BY fecha
+                ORDER BY fecha ASC
+            """), params)).all()
+
+            revenue_over_time = [
+                RevenuePoint(date=row.date, revenue=float(row.revenue), units=int(row.units))
+                for row in rot_rows
+            ]
+
+            # ── Top 10 products by revenue ─────────────────────────────────────
+            top_rows = (await session.execute(text("""
+                SELECT
+                    COALESCE(description, 'Sin descripción')          AS name,
+                    COALESCE(SUM(quantity), 0)                        AS units_sold,
+                    COALESCE(SUM(quantity * unit_price), 0)           AS revenue
+                FROM inventory_movements
+                WHERE tenant_id = :tenant_id
+                  AND tipo      = 'salida'
+                  AND origen    = 'factura_venta_alegra'
+                  AND fecha     BETWEEN :start_date AND :end_date
+                GROUP BY description
+                ORDER BY revenue DESC
+                LIMIT 10
+            """), params)).all()
+
+            top_products = [
+                TopSalesProduct(
+                    name=row.name,
+                    units_sold=int(row.units_sold),
+                    revenue=float(row.revenue),
+                    revenue_pct=(
+                        round(float(row.revenue) / total_revenue * 100, 1)
+                        if total_revenue > 0 else 0.0
+                    ),
+                )
+                for row in top_rows
+            ]
+
+            # ── Month comparison (only when period="month_comparison") ─────────
+            comparison: Optional[SalesComparison] = None
+            if period == "month_comparison":
+                prev_end   = start_date - timedelta(days=1)
+                prev_start = prev_end.replace(day=1)
+                prev_revenue = float(
+                    (await session.execute(text("""
+                        SELECT COALESCE(SUM(quantity * unit_price), 0) AS revenue
+                        FROM inventory_movements
+                        WHERE tenant_id = :tenant_id
+                          AND tipo      = 'salida'
+                          AND origen    = 'factura_venta_alegra'
+                          AND fecha     BETWEEN :prev_start AND :prev_end
+                    """), {
+                        "tenant_id": tenant_id,
+                        "prev_start": prev_start,
+                        "prev_end": prev_end,
+                    })).scalar() or 0
+                )
+                change_pct = (
+                    round((total_revenue - prev_revenue) / prev_revenue * 100, 1)
+                    if prev_revenue > 0
+                    else (100.0 if total_revenue > 0 else 0.0)
+                )
+                comparison = SalesComparison(
+                    current_month_revenue=total_revenue,
+                    previous_month_revenue=prev_revenue,
+                    change_pct=change_pct,
+                )
+
+            return SalesReportResponse(
+                kpis=SalesKPIs(
+                    total_revenue=total_revenue,
+                    total_units_sold=total_units,
+                    total_orders=total_orders,
+                    avg_ticket=avg_ticket,
+                ),
+                revenue_over_time=revenue_over_time,
+                top_products=top_products,
+                comparison=comparison,
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching sales report for tenant {tenant_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch sales report: {str(e)}")

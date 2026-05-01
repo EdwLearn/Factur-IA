@@ -45,17 +45,12 @@ import { PlanBadge } from "@/components/plan-badge"
 import { UpgradeModal } from "@/components/upgrade-modal"
 
 import {
-  TopSuppliersChart,
-  TopProductsChart,
-  PriceEvolutionChart,
-  PriceAlertsChart,
   SalesRotationChart,
+  MonthlyPurchaseChart,
+  MarginByProductChart,
+  PriceAlertsChart,
 } from "@/components/dashboard-charts"
-import {
-  type TopSuppliersResponse,
-  type TopProductsResponse,
-  type PriceAlertsResponse,
-} from "@/src/lib/api/endpoints/dashboard"
+import type { ReportsData, PriceAlertsResponse } from "@/src/lib/api/endpoints/dashboard"
 
 import { InventoryPage } from "@/components/inventory-page"
 import { InvoiceManagementPage } from "@/components/invoice-management-page"
@@ -76,6 +71,7 @@ export default function FacturIADashboard() {
   const [invoiceStatuses, setInvoiceStatuses] = useState<{[key: string]: InvoiceStatus}>({})
   const [processingError, setProcessingError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const [isMultiPage, setIsMultiPage] = useState(false)
 
   const [selectedInvoice, setSelectedInvoice] = useState<any>(null)
   const [isInvoiceModalOpen, setIsInvoiceModalOpen] = useState(false)
@@ -109,10 +105,11 @@ export default function FacturIADashboard() {
   const [stockAlertsData, setStockAlertsData] = useState<Array<{description: string; current_stock: number; min_stock: number; stock_status: string}>>([])
   const [recSummary, setRecSummary] = useState<{critical_restock: number; total_dead_stock: number; total_capital_tied: number} | null>(null)
 
-  // New chart states (null = loading, object = loaded)
-  const [topSuppliers, setTopSuppliers] = useState<TopSuppliersResponse | null>(null)
-  const [topProducts, setTopProducts] = useState<TopProductsResponse | null>(null)
-  const [priceAlerts, setPriceAlerts] = useState<PriceAlertsResponse | null>(null)
+  // New KPI charts data
+  const [reportsData, setReportsData] = useState<ReportsData | null>(null)
+  const [alertsModalOpen, setAlertsModalOpen] = useState(false)
+  const [priceAlertsData, setPriceAlertsData] = useState<PriceAlertsResponse | null>(null)
+
 
   const sidebarItems = [
     { name: "Dashboard", icon: BarChart3, active: activeTab === "Dashboard" },
@@ -152,20 +149,17 @@ export default function FacturIADashboard() {
       facturaAPI.setTenantId(tenantId)
 
       // Load all dashboard data in parallel
-      const [metrics, recentInvs, suppliersRes, productsRes, alertsRes] =
-        await Promise.all([
-          facturaAPI.getDashboardMetrics(),
-          facturaAPI.getRecentInvoices(10),
-          facturaAPI.getTopSuppliers().catch(() => null),
-          facturaAPI.getTopProducts().catch(() => null),
-          facturaAPI.getPriceAlerts().catch(() => null),
-        ])
+      const [metrics, recentInvs, reports, priceAlerts] = await Promise.all([
+        facturaAPI.getDashboardMetrics(),
+        facturaAPI.getRecentInvoices(10),
+        facturaAPI.getReports(365),
+        facturaAPI.getPriceAlerts(),
+      ])
 
       setDashboardMetrics(metrics)
       setRecentInvoicesData(recentInvs)
-      setTopSuppliers(suppliersRes ?? { suppliers: [] })
-      setTopProducts(productsRes ?? { products: [] })
-      setPriceAlerts(alertsRes ?? { alerts: [] })
+      setReportsData(reports)
+      setPriceAlertsData(priceAlerts)
     } catch (error) {
       console.error("Error loading dashboard data:", error)
       // Keep mock data if API fails
@@ -209,6 +203,31 @@ export default function FacturIADashboard() {
   const processFiles = async () => {
     if (uploadedFiles.length === 0) {
       alert("Por favor selecciona archivos primero")
+      return
+    }
+
+    // Multi-page path: send all files as pages of one invoice
+    if (isMultiPage && uploadedFiles.length === 1) {
+      alert("Para factura de múltiples páginas selecciona al menos 2 fotos. Si solo tienes 1 archivo, desactiva el modo multipágina.")
+      return
+    }
+    if (isMultiPage && uploadedFiles.length > 1) {
+      setIsUploading(true)
+      setProcessingError(null)
+      try {
+        const res = await facturaAPI.uploadMultipage(uploadedFiles)
+        if (!res.success || !res.data) {
+          throw new Error(res.error?.message ?? 'Error al subir páginas')
+        }
+        alert(res.data.message)
+        setUploadedFiles([])
+        setUploadProgress({})
+        setIsMultiPage(false)
+      } catch (error) {
+        setProcessingError(error instanceof Error ? error.message : 'Error desconocido')
+      } finally {
+        setIsUploading(false)
+      }
       return
     }
 
@@ -799,32 +818,33 @@ export default function FacturIADashboard() {
           {activeTab === "Dashboard" && (
             <>
               {/* Metrics Cards */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+                {/* KPI 1: Facturas este mes */}
                 <Card>
-                  <CardContent className="p-6">
+                  <CardContent className="p-5">
                     <div className="flex items-center justify-between">
                       <div>
-                        <p className="text-sm text-gray-600 mb-1">Facturas este mes</p>
+                        <p className="text-xs text-gray-500 mb-1">Facturas este mes</p>
                         <p className="text-2xl font-bold text-gray-900">
                           {isDashboardLoading ? "..." : dashboardMetrics?.total_invoices_month || 0}
                         </p>
                       </div>
-                      <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center">
-                        <FileText className="w-6 h-6 text-blue-600" />
+                      <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center">
+                        <FileText className="w-5 h-5 text-blue-600" />
                       </div>
                     </div>
                     <div className="flex items-center mt-2">
                       {!isDashboardLoading && dashboardMetrics && (
                         <>
                           {dashboardMetrics.month_over_month_invoices >= 0 ? (
-                            <TrendingUp className="w-4 h-4 text-green-500 mr-1" />
+                            <TrendingUp className="w-3.5 h-3.5 text-green-500 mr-1" />
                           ) : (
-                            <svg className="w-4 h-4 text-red-500 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <svg className="w-3.5 h-3.5 text-red-500 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
                             </svg>
                           )}
-                          <span className={`text-sm ${dashboardMetrics.month_over_month_invoices >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                            {dashboardMetrics.month_over_month_invoices >= 0 ? '+' : ''}{dashboardMetrics.month_over_month_invoices}%
+                          <span className={`text-xs ${dashboardMetrics.month_over_month_invoices >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                            {dashboardMetrics.month_over_month_invoices >= 0 ? '+' : ''}{dashboardMetrics.month_over_month_invoices}% vs mes ant.
                           </span>
                         </>
                       )}
@@ -832,44 +852,91 @@ export default function FacturIADashboard() {
                   </CardContent>
                 </Card>
 
+                {/* KPI 2: Valor Inventario */}
                 <Card>
-                  <CardContent className="p-6">
+                  <CardContent className="p-5">
                     <div className="flex items-center justify-between">
                       <div>
-                        <p className="text-sm text-gray-600 mb-1">Total inventario</p>
+                        <p className="text-xs text-gray-500 mb-1">Valor Inventario</p>
                         <p className="text-2xl font-bold text-gray-900">
                           {isDashboardLoading ? "..." : formatCurrency(dashboardMetrics?.total_inventory_value || 0)}
                         </p>
                       </div>
-                      <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center">
-                        <Archive className="w-6 h-6 text-green-600" />
+                      <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center">
+                        <Archive className="w-5 h-5 text-green-600" />
                       </div>
                     </div>
                     <div className="flex items-center mt-2">
-                      <TrendingUp className="w-4 h-4 text-green-500 mr-1" />
-                      <span className="text-sm text-green-600">
-                        +{dashboardMetrics?.month_over_month_inventory || 0}%
-                      </span>
+                      {dashboardMetrics?.month_over_month_inventory != null ? (
+                        <>
+                          <TrendingUp className="w-3.5 h-3.5 text-green-500 mr-1" />
+                          <span className="text-xs text-green-600">
+                            +{dashboardMetrics.month_over_month_inventory}% vs mes ant.
+                          </span>
+                        </>
+                      ) : (
+                        <span className="text-xs text-gray-400">{dashboardMetrics?.total_products || 0} productos</span>
+                      )}
                     </div>
                   </CardContent>
                 </Card>
 
+                {/* KPI 3: Margen Promedio */}
                 <Card>
-                  <CardContent className="p-6">
+                  <CardContent className="p-5">
                     <div className="flex items-center justify-between">
                       <div>
-                        <p className="text-sm text-gray-600 mb-1">Alertas pendientes</p>
+                        <p className="text-xs text-gray-500 mb-1">Margen Promedio</p>
                         <p className="text-2xl font-bold text-gray-900">
-                          {isDashboardLoading ? "..." : dashboardMetrics?.pending_alerts || 0}
+                          {isDashboardLoading
+                            ? "..."
+                            : dashboardMetrics?.avg_margin != null
+                              ? `${dashboardMetrics.avg_margin}%`
+                              : "—"}
                         </p>
                       </div>
-                      <div className="w-12 h-12 bg-orange-100 rounded-full flex items-center justify-center">
-                        <AlertTriangle className="w-6 h-6 text-orange-600" />
+                      <div className="w-10 h-10 bg-purple-100 rounded-full flex items-center justify-center">
+                        <Calculator className="w-5 h-5 text-purple-600" />
                       </div>
                     </div>
                     <div className="flex items-center mt-2">
-                      <span className="text-sm text-gray-500">
-                        {dashboardMetrics?.total_suppliers || 0} proveedores
+                      {dashboardMetrics?.avg_margin != null ? (
+                        <span className={`text-xs font-medium ${
+                          dashboardMetrics.avg_margin >= 30 ? "text-green-600"
+                          : dashboardMetrics.avg_margin >= 15 ? "text-amber-600"
+                          : "text-red-600"
+                        }`}>
+                          {dashboardMetrics.avg_margin >= 30 ? "Saludable ✓"
+                           : dashboardMetrics.avg_margin >= 15 ? "Aceptable"
+                           : "Bajo — revisar precios"}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-gray-400">Asigna precios de venta</span>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* KPI 4: Alertas pendientes (abre popup) */}
+                <Card
+                  className="cursor-pointer hover:shadow-md transition-shadow border-orange-200 hover:border-orange-400"
+                  onClick={() => setAlertsModalOpen(true)}
+                >
+                  <CardContent className="p-5">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-xs text-gray-500 mb-1">Alertas de Precio</p>
+                        <p className="text-2xl font-bold text-gray-900">
+                          {isDashboardLoading ? "..." : priceAlertsData?.alerts?.length ?? 0}
+                        </p>
+                      </div>
+                      <div className="w-10 h-10 bg-orange-100 rounded-full flex items-center justify-center">
+                        <AlertTriangle className="w-5 h-5 text-orange-600" />
+                      </div>
+                    </div>
+                    <div className="flex items-center mt-2">
+                      <span className="text-xs text-orange-600 font-medium underline">
+                        {(priceAlertsData?.alerts?.length ?? 0) > 0 ? "Ver alertas →" : "Sin variaciones >10%"}
                       </span>
                     </div>
                   </CardContent>
@@ -935,17 +1002,52 @@ export default function FacturIADashboard() {
                           ref={fileInputRef}
                           type="file"
                           multiple
-                          accept=".pdf,.jpg,.jpeg,.png,.xml"
+                          accept=".pdf,.jpg,.jpeg,.png,.xml,.webp"
                           onChange={handleFileInput}
                           className="hidden"
                         />
                       </div>
 
+                      {/* Multi-page toggle */}
+                      <div className="flex items-center gap-3 mt-4 px-1">
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={isMultiPage}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setIsMultiPage(!isMultiPage)
+                          }}
+                          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${
+                            isMultiPage ? 'bg-blue-600' : 'bg-gray-300'
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
+                              isMultiPage ? 'translate-x-4' : 'translate-x-1'
+                            }`}
+                          />
+                        </button>
+                        <label className="text-sm text-gray-600 cursor-pointer select-none" onClick={(e) => { e.stopPropagation(); setIsMultiPage(!isMultiPage) }}>
+                          Esta factura tiene múltiples páginas (fotos separadas)
+                        </label>
+                      </div>
+
+                      {isMultiPage && (
+                        <div className="mt-2 px-1 py-2 bg-blue-50 rounded-lg border border-blue-200">
+                          <p className="text-xs text-blue-700">
+                            Selecciona todas las fotos en orden (página 1, 2, 3…). Se unirán automáticamente en una sola factura.
+                          </p>
+                        </div>
+                      )}
+
                       {/* Uploaded Files List */}
                       {uploadedFiles.length > 0 && (
                         <div className="mt-6">
                           <h4 className="text-sm font-medium text-gray-900 mb-3">
-                            Archivos subidos ({uploadedFiles.length})
+                            {isMultiPage
+                              ? `Páginas seleccionadas (${uploadedFiles.length}) — se unirán en 1 factura`
+                              : `Archivos subidos (${uploadedFiles.length})`}
                           </h4>
                           <div className="space-y-3">
                             {uploadedFiles.map((file, index) => (
@@ -1005,7 +1107,9 @@ export default function FacturIADashboard() {
                                       onClick={processFiles}
                               >
                                 <CheckCircle className="w-4 h-4 mr-2" />
-                                Procesar Facturas ({uploadedFiles.length})
+                                {isMultiPage && uploadedFiles.length > 1
+                                  ? `Subir ${uploadedFiles.length} páginas como una factura`
+                                  : `Procesar Facturas (${uploadedFiles.length})`}
                               </Button>
                               <Button
                                 variant="outline"
@@ -1121,18 +1225,9 @@ export default function FacturIADashboard() {
                 )}
               </div>
 
-              {/* ── New charts section ── */}
+              {/* ── Sales rotation ── */}
               <div className="mt-8">
-                <h3 className="text-xl font-semibold text-gray-900 mb-6">
-                  Análisis de Compras y Precios
-                </h3>
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                  <TopSuppliersChart data={topSuppliers} />
-                  <TopProductsChart data={topProducts} />
-                  <PriceEvolutionChart />
-                  <PriceAlertsChart data={priceAlerts} />
-                  <SalesRotationChart />
-                </div>
+                <SalesRotationChart />
               </div>
             </>
           )}
@@ -1147,6 +1242,32 @@ export default function FacturIADashboard() {
           {activeTab === "Reportes" && <ReportsAnalyticsPage />}
           {activeTab === "Recomendaciones" && <RecommendationsPage />}
           {activeTab === "Configuración" && <ConfigurationPage />}
+
+          {/* Alerts Modal */}
+          {alertsModalOpen && (
+            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+              <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden">
+                <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className="w-5 h-5 text-orange-500" />
+                    <h2 className="text-lg font-semibold text-gray-900">Alertas de Variación de Precio</h2>
+                  </div>
+                  <button
+                    onClick={() => setAlertsModalOpen(false)}
+                    className="text-gray-400 hover:text-gray-600 transition-colors"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+                <div className="p-6 overflow-y-auto flex-1">
+                  <p className="text-sm text-gray-500 mb-4">
+                    Productos cuyo precio de compra varió más del 10% respecto a la compra anterior.
+                  </p>
+                  <PriceAlertsChart data={priceAlertsData} />
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Invoice Edit Modal */}
           {isInvoiceModalOpen && selectedInvoice && (

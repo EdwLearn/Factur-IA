@@ -17,7 +17,6 @@ import {
   X,
   FileText,
   Clock,
-  TrendingUp,
   Phone,
   Mail,
   MapPin,
@@ -264,10 +263,6 @@ export default function LandingPage() {
                 <div className="flex items-center gap-2 bg-white px-4 py-2 rounded-full shadow-sm">
                   <CheckCircle className="w-4 h-4 text-green-600" />
                   <span className="text-sm font-medium">+95% precisión</span>
-                </div>
-                <div className="flex items-center gap-2 bg-white px-4 py-2 rounded-full shadow-sm">
-                  <TrendingUp className="w-4 h-4 text-purple-600" />
-                  <span className="text-sm font-medium">300%+ ROI</span>
                 </div>
               </div>
 

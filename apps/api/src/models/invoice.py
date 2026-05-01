@@ -10,10 +10,11 @@ from decimal import Decimal
 class InvoiceStatus(str, Enum):
     """Invoice processing status"""
     UPLOADED = "uploaded"
-    PROCESSING = "processing" 
+    PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
     VALIDATED = "validated"
+    MERGED = "merged"
 
 class InvoiceType(str, Enum):
     """Type of invoice document"""
@@ -157,10 +158,16 @@ class ProcessedInvoice(BaseModel):
     # Extracted data (opcional - solo se incluye cuando se solicita)
     invoice_data: Optional[InvoiceData] = None
 
+    # Multi-page support
+    parent_invoice_id: Optional[str] = None
+    page_number: Optional[int] = None
+    total_pages: Optional[int] = None
+    is_consolidated: bool = False
+
     # Storage info
     s3_key: Optional[str] = None
     textract_job_id: Optional[str] = None
-    
+
     class Config:
         json_encoders = {
             datetime: lambda v: v.isoformat() if v else None,
